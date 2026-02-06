@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey)](https://github.com/yupiyy/bhyakugan)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey)](https://github.com/areksaxyz/bhyakugan)
 
 ```text
    ▄▄▄▄    ██░ ██▓██   ██▓ ▄▄▄       ██ ▄█▀ █    ██   ▄████  ▄▄▄       ███▄    █
@@ -72,7 +72,7 @@ graph TD
 
 ### Build dari Source
 ```bash
-git clone https://github.com/yupiyy/bhyakugan.git
+git clone https://github.com/areksaxyz/bhyakugan.git
 cd bhyakugan
 go build -o bhyakugan cmd/bhyakugan/main.go
 ```
@@ -125,4 +125,4 @@ Hasil scan disimpan di folder `bhyakugan-output/` dengan format yang rapi:
 Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.
 
 ---
-Created with ❤️ by **yupiyy**
+Created with ❤️ by **areksaxyz**

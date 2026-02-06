@@ -1,0 +1,44 @@
+# Binaries
+bhyakugan
+bhyakugan_bin
+mockserver
+mockserver_bin
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output & Reports (SANGAT PENTING)
+bhyakugan-output/
+report_*.html
+findings.txt
+subdomains.txt
+live_hosts.txt
+*.png
+
+# Logs
+*.log
+mock.log
+final_*.log
+
+# Debug & Temp
+.gemini/
+debug/
+tmp/
+.DS_Store
+
+# Go specific
+vendor/
+obj/
+bin/
+
+# Test files
+index.html
+map.png
+
+# Secrets
+.env
+secret.txt
+credentials.txt

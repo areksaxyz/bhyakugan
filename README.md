@@ -51,8 +51,8 @@ graph TD
     D --> E[Parallel Modules]
     
     E --> E1[Secrets: Strict Grading]
-    E --> E2[Injections: SQLi (Timing), NoSQLi (Auth)]
-    E --> E3[Logic: PP (State), Proxy (Diff), ORM]
+    E --> E2["Injections: SQLi (Timing), NoSQLi (Auth)"]
+    E --> E3["Logic: PP (State), Proxy (Diff), ORM"]
     E --> E4[Infra: SSRF, GraphQL, S3, WCD]
     E --> E5[Static: JS Analyzer (Recon Only)]
     end

@@ -50,17 +50,17 @@ graph TD
     C2 --> D
     D --> E[Parallel Modules]
     
-    E --> E1[Secrets: Strict Grading]
+    E --> E1["Secrets: Strict Grading"]
     E --> E2["Injections: SQLi (Timing), NoSQLi (Auth)"]
     E --> E3["Logic: PP (State), Proxy (Diff), ORM"]
-    E --> E4[Infra: SSRF, GraphQL, S3, WCD]
-    E --> E5[Static: JS Analyzer (Recon Only)]
+    E --> E4["Infra: SSRF, GraphQL, S3, WCD"]
+    E --> E5["Static: JS Analyzer (Recon Only)"]
     end
     
     subgraph "Phase 3: Smart Reporting"
-    E1 & E2 & E3 & E4 & E5 --> F[Deduplication Engine]
-    F --> G[Grouped Findings (Root Cause)]
-    G --> H[Final Report HTML]
+    E1 & E2 & E3 & E4 & E5 --> F["Deduplication Engine"]
+    F --> G["Grouped Findings (Root Cause)"]
+    G --> H["Final Report HTML"]
     end
 ```
 

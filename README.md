@@ -17,21 +17,20 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah framework pemindaian backend otomatis berkecepatan tinggi yang dirancang khusus untuk Bug Bounty Hunter dan Security Researcher. Versi **3.5** (Production Ready) menghadirkan engine **Zero False Positive** yang telah teruji, deteksi cerdas berbasis state-change, dan logika validasi yang ketat.
+**Bhyakugan** adalah framework pemindaian backend otomatis berkecepatan tinggi yang dirancang khusus untuk Bug Bounty Hunter dan Security Researcher. Versi **3.7** menghadirkan stabilitas tinggi dengan engine **Anti-Stuck**, pencarian subdomain **Inkremental**, dan integrasi payload dari **PayloadsAllTheThings**.
 
-## 🔥 Fitur Unggulan (v3.5)
+## 🔥 Fitur Unggulan (v3.7)
 
-### ✅ Production-Ready & Anti-Nodong
-Scanner ini menggunakan logika deteksi "Enterprise-Grade" untuk menghilangkan false positive:
-*   **Prototype Pollution**: Hanya melapor jika ada **State Change** (403->200) atau bypass auth nyata. Refleksi keyword diabaikan.
-*   **SQL Injection**: Menggunakan **Strict Timing Check** (Baseline -> Payload -> Control -> Repeat) untuk membedakan antara vuln dan network lag/WAF tarpit.
-*   **NoSQL Injection**: Mewajibkan bukti **Authentication Success** (Set-Cookie baru, token JSON, redirect ke admin).
-*   **Proxy Bypass**: Menggabungkan temuan berdasarkan **Root Cause** (Header) dan memisahkan endpoint kritis vs info dalam satu laporan.
-*   **Secrets Auditor**: Grading ketat (Plaintext/Dump = **Critical**, Config = **High**, Unverified = **Info**).
+### 🚀 Advanced Recon (Consistent & Aggressive)
+*   **Incremental Discovery**: Menyimpan riwayat subdomain di `bhyakugan-output/`. Hasil pencarian tidak akan pernah berkurang antar sesi.
+*   **Triple Threat Recon**: Menggabungkan `subfinder (-all)`, `assetfinder`, dan kueri langsung ke **crt.sh API**.
+*   **httpx Optimized**: Filter host hidup dengan rate-limit dan timeout cerdas untuk mencegah hang pada infrastruktur besar.
 
-### ⚡ High-Concurrency Engine
-*   Dioptimalkan untuk menangani **100+ koneksi simultan** per host.
-*   Tidak ada lagi "macet" saat scanning target besar dengan banyak plugin aktif.
+### ✅ Enterprise-Grade Detection (Zero False Positive)
+*   **SQL Injection**: Menggunakan **Strict Timing Check** (Baseline -> Payload -> Control) dengan payload terbaru (RLIKE, ELT, BENCHMARK).
+*   **Isolated JS Analysis**: Engine analisis JavaScript sekarang berjalan secara terisolasi dengan *timeout* mandiri. Analisa file JS yang lambat tidak akan menahan proses pemindaian host.
+*   **SSRF Evolution**: Deteksi metadata cloud (AWS, Azure, GCP, DigitalOcean, Oracle) dan bypass localhost tingkat lanjut.
+*   **LFI & Wrapper**: Deteksi mendalam menggunakan PHP filter base64 dengan verifikasi konten otomatis untuk menghindari *Soft 404*.
 
 ## 🌐 Arsitektur (Workflow)
 
@@ -39,28 +38,30 @@ Scanner ini menggunakan logika deteksi "Enterprise-Grade" untuk menghilangkan fa
 graph TD
     A[Input: Domain/URL] --> B{Mode Scan}
     
-    subgraph "Phase 1: Reconnaissance"
-    B -->|Wildcard| C[Subdomain Discovery]
-    C -->|Subfinder/Assetfinder| C1[Daftar Subdomain]
-    C1 --> C2[httpx: Filtering Live Hosts]
+    subgraph "Phase 1: Incremental Recon"
+    B -->|Wildcard| C[Load Subdomain History]
+    C --> D[Parallel Discovery: Subfinder + Assetfinder + crt.sh]
+    D --> E[Deduplication & Wildcard Cleaning]
+    E --> F[Save Updated History]
+    F --> G[httpx: Filtering Live Hosts]
     end
     
-    subgraph "Phase 2: Core Analysis"
-    B -->|Single Target| D[Scanner Engine]
-    C2 --> D
-    D --> E[Parallel Modules]
+    subgraph "Phase 2: Core Scanning (Isolated)"
+    B -->|Single Target| H[Scanner Engine]
+    G --> H
+    H --> I[Isolated Parallel Modules]
     
-    E --> E1["Secrets: Strict Grading"]
-    E --> E2["Injections: SQLi (Timing), NoSQLi (Auth)"]
-    E --> E3["Logic: PP (State), Proxy (Diff), ORM"]
-    E --> E4["Infra: SSRF, GraphQL, S3, WCD"]
-    E --> E5["Static: JS Analyzer (Recon Only)"]
+    I --> I1[Injections: SQLi, NoSQLi, SSRF, LFI]
+    I --> I2[Logic: PP, Proxy, ORM Leak]
+    I --> I3[Auth: JWT, SAML, GraphQL]
+    I --> I4[Secrets: Validator Engine]
+    I --> I5[JS: Isolated JSAnalyzer + Secrets Detect]
     end
     
     subgraph "Phase 3: Smart Reporting"
-    E1 & E2 & E3 & E4 & E5 --> F["Deduplication Engine"]
-    F --> G["Grouped Findings (Root Cause)"]
-    G --> H["Final Report HTML"]
+    I1 & I2 & I3 & I4 & I5 --> J[Deduplication Engine]
+    J --> K[Grouped Findings (Root Cause)]
+    K --> L[Final HTML Report]
     end
 ```
 
@@ -68,7 +69,7 @@ graph TD
 
 ### Prasyarat
 *   Go 1.21+
-*   Tools eksternal (Opsional untuk mode Wildcard): `subfinder`, `assetfinder`, `httpx`
+*   Tools pendukung: `subfinder`, `assetfinder`, `httpx`
 
 ### Build dari Source
 ```bash
@@ -79,21 +80,15 @@ go build -o bhyakugan cmd/bhyakugan/main.go
 
 ## 📖 Penggunaan
 
-### 1. Scan Wildcard (Rekomendasi untuk Bug Bounty)
-Otomatis mencari subdomain, memfilter host hidup, dan men-scan seluruh infrastruktur.
+### 1. Scan Wildcard (Consistent Mode)
+Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 ```bash
-./bhyakugan -domain google.com
+./bhyakugan -domain ugm.ac.id -depth 1
 ```
 
 ### 2. Scan Target Tunggal
 ```bash
 ./bhyakugan -target https://api.example.com -depth 2
-```
-
-### 3. Custom Fuzzing
-Gunakan wordlist eksternal untuk serangan LFI/RCE yang lebih brutal.
-```bash
-./bhyakugan -target https://example.com -payloads wordlists/LFI-Jhaddix.txt
 ```
 
 ### Opsi Flag
@@ -105,24 +100,17 @@ Gunakan wordlist eksternal untuk serangan LFI/RCE yang lebih brutal.
 | `-payloads`| Path ke file wordlist kustom (Opsional) |
 | `-timeout` | HTTP Timeout dalam detik (default: 10) |
 
-## 📊 Output & Reporting
-Hasil scan disimpan di folder `bhyakugan-output/` dengan format yang rapi:
-*   **Report HTML**: Laporan visual interaktif dengan finding yang dikelompokkan.
-*   **Findings TXT**: Log mentah untuk parsing lebih lanjut.
-*   **Recon Data**: `subdomains.txt` dan `live_hosts.txt`.
-
 ## 🛡️ Modul Deteksi
 
 | Kategori | Fitur Utama |
 | :--- | :--- |
-| **Injection** | SQLi (Time/Boolean/Error), NoSQLi (Auth Bypass), XPath, XSLT |
-| **Logic** | Prototype Pollution (Server-Side), Proxy Misconfig (XFF), ORM Leak |
-| **Server** | SSRF (Metadata/Internal), Advanced LFI (Wrapper/Base64), SSTI |
-| **Auth** | JWT (None/Kid), SAML Discovery, Secrets (Active Validation) |
-| **Infra** | GraphQL (Introspection/Batching), S3 Bucket, Web Cache Deception |
+| **Injection** | SQLi (Advanced Time-Based), NoSQLi, SSRF (Cloud Meta), LFI (Wrappers) |
+| **Logic** | Prototype Pollution, Proxy Misconfig, ORM Leak, SAML/JWT |
+| **Recon** | Isolated JS Analysis, Subdomain History, S3 Bucket Verification |
+| **Secrets** | Active Key Validation (OpenAI, AWS, GitHub, Stripe, dll) |
 
 ## ⚠️ Disclaimer
 Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.
 
 ---
-Created with ❤️ by **areksaxyz**
+Created with ❤️ by **areksaxyz (Muhamad Arga Reksapati)**

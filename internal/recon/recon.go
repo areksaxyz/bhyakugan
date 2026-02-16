@@ -4,53 +4,144 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 )
 
-// RunSubdomainDiscovery runs subfinder and assetfinder
+// RunSubdomainDiscovery runs subfinder and assetfinder in parallel and merges with existing results
 func RunSubdomainDiscovery(domain string) ([]string, error) {
 	fmt.Printf("[*] Running Subdomain Discovery on %s...\n", domain)
 	
+	outputDir := "bhyakugan-output"
+	historyFile := filepath.Join(outputDir, fmt.Sprintf("subdomains_%s.txt", strings.ReplaceAll(domain, ".", "_")))
+	
 	uniqueSubs := make(map[string]bool)
+	var mu sync.Mutex
+
+	// Load existing history if available
+	if _, err := os.Stat(historyFile); err == nil {
+		content, _ := os.ReadFile(historyFile)
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				uniqueSubs[line] = true
+			}
+		}
+		if len(uniqueSubs) > 0 {
+			fmt.Printf("    -> Loaded %d existing subdomains from history.\n", len(uniqueSubs))
+		}
+	}
+
+	var wg sync.WaitGroup
 
 	// 1. Run Subfinder
-	fmt.Println("    -> Running subfinder...")
-	cmd := exec.Command("subfinder", "-d", domain, "-silent")
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			if strings.TrimSpace(line) != "" {
-			
-uniqueSubs[line] = true
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Println("    -> Running subfinder...")
+		// Use -all to ensure all sources are used, even slow ones.
+		cmd := exec.Command("subfinder", "-d", domain, "-all", "-silent")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			mu.Lock()
+			count := 0
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					uniqueSubs[line] = true
+					count++
+				}
 			}
+			fmt.Printf("    [+] Subfinder found %d subdomains.\n", count)
+			mu.Unlock()
+		} else {
+			fmt.Printf("    [!] Error running subfinder: %v\n", err)
 		}
-	} else {
-		fmt.Printf("    [!] Error running subfinder: %v\n", err)
-	}
+	}()
 
 	// 2. Run Assetfinder
-	fmt.Println("    -> Running assetfinder...")
-	cmd2 := exec.Command("assetfinder", "--subs-only", domain)
-	output2, err := cmd2.CombinedOutput()
-	if err == nil {
-		lines := strings.Split(string(output2), "\n")
-		for _, line := range lines {
-			if strings.TrimSpace(line) != "" {
-			
-uniqueSubs[line] = true
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Println("    -> Running assetfinder...")
+		cmd2 := exec.Command("assetfinder", "--subs-only", domain)
+		output2, err := cmd2.CombinedOutput()
+		if err == nil {
+			lines := strings.Split(string(output2), "\n")
+			mu.Lock()
+			count := 0
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					uniqueSubs[line] = true
+					count++
+				}
 			}
+			fmt.Printf("    [+] Assetfinder found %d subdomains.\n", count)
+			mu.Unlock()
+		} else {
+			fmt.Printf("    [!] Error running assetfinder: %v\n", err)
 		}
-	} else {
-		fmt.Printf("    [!] Error running assetfinder: %v\n", err)
-	}
+	}()
+
+	// 3. Run crt.sh query (Direct API)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Println("    -> Querying crt.sh...")
+		// Simple crt.sh query using curl/grep to avoid heavy dependencies
+		// Output format: JSON or plain text. We'll use a simple approach.
+		query := fmt.Sprintf("https://crt.sh/?q=%%25.%s&output=json", domain)
+		cmd3 := exec.Command("curl", "-s", query)
+		output3, err := cmd3.CombinedOutput()
+		if err == nil {
+			// Extract common_name and name_value using simple string matching or regex
+			// to avoid importing a JSON parser if not needed, but strings.Contains is enough for basic extraction
+			lines := strings.Split(string(output3), ",")
+			mu.Lock()
+			count := 0
+			for _, line := range lines {
+				if strings.Contains(line, "name_value") {
+					parts := strings.Split(line, ":")
+					if len(parts) > 1 {
+						sub := strings.Trim(parts[1], "\"")
+						// Handle multiple subdomains in one field (newline separated in crt.sh)
+						subs := strings.Split(sub, "\\n")
+						for _, s := range subs {
+							s = strings.TrimSpace(s)
+							if strings.HasSuffix(s, domain) && !strings.Contains(s, "*") {
+								uniqueSubs[s] = true
+								count++
+							}
+						}
+					}
+				}
+			}
+			fmt.Printf("    [+] crt.sh API found %d potential subdomains.\n", count)
+			mu.Unlock()
+		} else {
+			fmt.Printf("    [!] Error querying crt.sh: %v\n", err)
+		}
+	}()
+
+	wg.Wait()
 
 	var results []string
 	for sub := range uniqueSubs {
 		results = append(results, sub)
 	}
-	fmt.Printf("    -> Found %d unique subdomains.\n", len(results))
+
+	// Save merged results to history file
+	_ = os.MkdirAll(outputDir, 0755)
+	historyData := strings.Join(results, "\n")
+	_ = os.WriteFile(historyFile, []byte(historyData), 0644)
+
+	fmt.Printf("    -> Found %d unique subdomains (merged with history).\n", len(results))
 	return results, nil
 }
 
@@ -58,7 +149,8 @@ uniqueSubs[line] = true
 func FilterLiveHosts(subdomains []string) ([]string, error) {
 	fmt.Println("[*] Filtering Live Hosts with httpx...")
 	
-	cmd := exec.Command("httpx", "-silent", "-no-color")
+	// Add timeout to prevent hanging
+	cmd := exec.Command("httpx", "-silent", "-no-color", "-t", "50", "-rl", "100", "-timeout", "5")
 	
 	// Pass subdomains via Stdin
 	var stdin bytes.Buffer

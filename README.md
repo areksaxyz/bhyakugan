@@ -59,9 +59,9 @@ graph TD
     end
     
     subgraph "Phase 3: Smart Reporting"
-    I1 & I2 & I3 & I4 & I5 --> J[Deduplication Engine]
-    J --> K[Grouped Findings (Root Cause)]
-    K --> L[Final HTML Report]
+    I1 & I2 & I3 & I4 & I5 --> J["Deduplication Engine"]
+    J --> K["Grouped Findings (Root Cause)"]
+    K --> L["Final HTML Report"]
     end
 ```
 

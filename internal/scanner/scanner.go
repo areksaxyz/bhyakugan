@@ -340,7 +340,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						select {
 						case jsSem <- struct{}{}:
 							defer func() { <-jsSem }()
-							jsanalyzer.ScanJS(u, client, &sync.WaitGroup{}, onFound) // Use dummy wg since we handle it here
+							jsanalyzer.ScanJS(u, client, nil, onFound) // Pass nil as we handle WaitGroup locally in this goroutine
 						case <-time.After(10 * time.Second):
 							// Don't wait forever for a slot in jsSem
 							return

@@ -26,7 +26,9 @@ var (
 
 // ScanJS downloads and analyzes a JS file
 func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(core.Finding)) {
-	defer wg.Done()
+	if wg != nil {
+		defer wg.Done()
+	}
 
 	resp, err := client.Get(jsURL)
 	if err != nil {

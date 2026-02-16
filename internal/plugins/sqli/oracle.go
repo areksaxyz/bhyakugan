@@ -69,15 +69,8 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		
 		// Test True
 		q.Set(param, originalVal+payloadTrue)
-		targetTrue := u.String() + "?" + q.Encode() // Re-encoding might break the specific ' format if not careful, but net/url handles it.
-		// Wait, the payload relies on specific quoting. URL encoding is necessary.
-		
-		// Let's manually construct to ensure the payload isn't double-encoded or malformed by Go's encoder in a way that breaks SQLi (though usually Go is safe).
-		// Better: q.Set(param, originalVal + payloadTrue) is correct.
-		
-		q.Set(param, originalVal + payloadTrue)
 		u.RawQuery = q.Encode()
-		targetTrue = u.String()
+		targetTrue := u.String()
 
 		respT, errT := client.Get(targetTrue)
 		if errT != nil { continue }
@@ -121,10 +114,24 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		lenF := len(bodyF)
 		
 		if !isConfirmed {
-			// If True is close to Baseline, and False is different
-			if isSimilarLength(lenT, baseLen) && !isSimilarLength(lenF, baseLen) {
-				isConfirmed = true
-				evidence = fmt.Sprintf("Response Length Deviation:\n- Baseline: %d bytes\n- True Payload: %d bytes\n- False Payload: %d bytes", baseLen, lenT, lenF)
+			// TRIPLE CHECK for Length Deviation
+			// 1. True must be VERY similar to Baseline (< 2% diff)
+			// 2. False must be SIGNIFICANTLY different from Baseline (> 5% diff)
+			// 3. Repeat to ensure stability
+			
+			if isSimilarLengthStrict(lenT, baseLen) && !isSimilarLengthStrict(lenF, baseLen) {
+				// Verify Stability
+				vRespT, _ := client.Get(targetTrue)
+				vRespF, _ := client.Get(targetFalse)
+				if vRespT != nil && vRespF != nil {
+					vLenT := getRespLen(vRespT)
+					vLenF := getRespLen(vRespF)
+					
+					if isSimilarLengthStrict(vLenT, baseLen) && !isSimilarLengthStrict(vLenF, baseLen) {
+						isConfirmed = true
+						evidence = fmt.Sprintf("Stable Response Length Deviation (Triple Checked):\n- Baseline: %d bytes\n- True Payload: %d bytes\n- False Payload: %d bytes", baseLen, vLenT, vLenF)
+					}
+				}
 			}
 		}
 
@@ -147,12 +154,18 @@ Reason: %s`,
 	}
 }
 
-func isSimilarLength(a, b int) bool {
+func getRespLen(r *http.Response) int {
+	defer r.Body.Close()
+	b, _ := io.ReadAll(r.Body)
+	return len(b)
+}
+
+func isSimilarLengthStrict(a, b int) bool {
+	if a == 0 || b == 0 { return false }
 	diff := a - b
-	if diff < 0 {
-		diff = -diff
-	}
-	return diff < (b / 10) // 10% tolerance
+	if diff < 0 { diff = -diff }
+	// Strict 2% tolerance for large pages
+	return diff < (b / 50) 
 }
 
 func reportOracle(target, evidence, severity string, onFound func(core.Finding)) {

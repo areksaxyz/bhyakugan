@@ -7,3 +7,11 @@ type Finding struct {
 	Detail   string // Specifics (e.g., the key itself, the path)
 	Severity string // Critical, High, Medium, Low, Info
 }
+
+// ScanContext holds intelligence about the current target
+type ScanContext struct {
+	Language  string // php, node, python, java, dotnet, unknown
+	Framework string // laravel, django, express, spring, etc.
+	WAF       string // cloudflare, akamai, imperva, etc.
+	Baseline  int    // baseline response length
+}

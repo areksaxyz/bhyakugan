@@ -41,10 +41,11 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		cookies := strings.Join(headers.Values("Set-Cookie"), " ")
 		baseBody, _ := io.ReadAll(respBase.Body)
 		baseBodyStr := strings.ToLower(string(baseBody))
+		respBase.Body.Close()
 
 		// Rails Fingerprints
 		if headers.Get("X-GitHub-Request-Id") != "" || 
-		   strings.Contains(server, "github") || // GitHub uses Rails/internal
+		   strings.Contains(server, "github") || 
 		   headers.Get("X-Runtime") != "" || 
 		   headers.Get("X-Rack-Cache") != "" ||
 		   strings.Contains(cookies, "_session_id") ||
@@ -54,14 +55,19 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 		// Django Fingerprints
 		if strings.Contains(cookies, "csrftoken") || 
-		   strings.Contains(cookies, "sessionid") || // Django default session cookie name
+		   strings.Contains(cookies, "sessionid") || 
 		   strings.Contains(poweredBy, "django") || 
 		   strings.Contains(server, "gunicorn") ||
 		   strings.Contains(baseBodyStr, "csrfmiddlewaretoken") || strings.Contains(baseBodyStr, "django") {
 			isDjango = true
 		}
-		
-		respBase.Body.Close()
+	} else {
+		return // Can't establish baseline
+	}
+
+	// Optimization: Only scan if one of the supported frameworks is detected
+	if !isRails && !isDjango {
+		return
 	}
 
 	for _, p := range ORMPayloads {

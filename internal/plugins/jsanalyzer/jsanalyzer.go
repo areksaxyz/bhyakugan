@@ -10,6 +10,7 @@ import (
 
 	"github.com/yupiyy/bhyakugan/internal/core"
 	"github.com/yupiyy/bhyakugan/internal/plugins/secrets"
+	"github.com/yupiyy/bhyakugan/internal/utils"
 )
 
 var (
@@ -45,6 +46,24 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 	}
 
 	fmt.Printf("[*] Analyzing JS File: %s\n", jsURL)
+
+	// 0. Check for Sourcemaps (.map)
+	mapURL := jsURL + ".map"
+	reqMap, _ := http.NewRequest("GET", mapURL, nil)
+	utils.SetDefaultHeaders(reqMap, mapURL)
+	respMap, errMap := client.Do(reqMap)
+	if errMap == nil {
+		if respMap.StatusCode == 200 {
+			fmt.Printf("[!] FOUND JS Sourcemap: %s\n", mapURL)
+			onFound(core.Finding{
+				Type:     "Recon: JS Sourcemap",
+				Target:   mapURL,
+				Detail:   "Javascript sourcemap file discovered. Can be used to recover original source code.",
+				Severity: "Low",
+			})
+		}
+		respMap.Body.Close()
+	}
 
 	// 1. Use centralized secrets detector
 	secrets.DetectInContent(content, jsURL, onFound)

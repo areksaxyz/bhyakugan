@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -18,10 +17,9 @@ func ExtractLinks(baseURL string, htmlBody string) []string {
 		return links
 	}
 	baseHost := u.Host
-	baseScheme := u.Scheme
 
-	// Regex to find hrefs (Simple but effective for standard HTML)
-	re := regexp.MustCompile(`href=["'](.*?)["']`)
+	// Regex to find hrefs (Even more robust version)
+	re := regexp.MustCompile(`(?i)href\s*=\s*["']?([^"' >]+)["']?`)
 	matches := re.FindAllStringSubmatch(htmlBody, -1)
 
 	for _, match := range matches {
@@ -33,29 +31,10 @@ func ExtractLinks(baseURL string, htmlBody string) []string {
 				continue
 			}
 
-			// Resolve relative URLs
-			resolvedURL := ""
-			if strings.HasPrefix(rawLink, "http") {
-				resolvedURL = rawLink
-			} else if strings.HasPrefix(rawLink, "//") {
-				resolvedURL = baseScheme + ":" + rawLink
-			} else if strings.HasPrefix(rawLink, "/") {
-				// Absolute path relative to domain
-				resolvedURL = fmt.Sprintf("%s://%s%s", baseScheme, baseHost, rawLink)
-			} else {
-				// Relative path
-				path := u.Path
-				if !strings.HasSuffix(path, "/") {
-					// Remove last segment to get directory
-					lastSlash := strings.LastIndex(path, "/")
-					if lastSlash != -1 {
-						path = path[:lastSlash+1]
-					} else {
-						path = "/"
-					}
-				}
-				resolvedURL = fmt.Sprintf("%s://%s%s%s", baseScheme, baseHost, path, rawLink)
-			}
+			// Resolve relative URLs (Professional approach)
+			parsedRaw, errRaw := url.Parse(rawLink)
+			if errRaw != nil { continue }
+			resolvedURL := u.ResolveReference(parsedRaw).String()
 
 			// Verify Domain Scope (Internal Only)
 			parsedResolved, err := url.Parse(resolvedURL)

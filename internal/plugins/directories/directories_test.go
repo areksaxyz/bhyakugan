@@ -19,3 +19,15 @@ func TestIsLikelySQLDump(t *testing.T) {
 		t.Fatal("expected non-sql html to be false")
 	}
 }
+
+func TestIsAutodiscoverConfigRedirect(t *testing.T) {
+	base := "http://autodiscover.tiktok.com/"
+	final := "https://outlook.office365.com/config.php?realm=tiktok.com&vd=autodiscover"
+	if !isAutodiscoverConfigRedirect(base, "config.php", final) {
+		t.Fatal("expected autodiscover redirect to be ignored")
+	}
+
+	if isAutodiscoverConfigRedirect("https://example.com/", "config.php", "https://example.com/config.php") {
+		t.Fatal("expected same-host config.php to not be ignored")
+	}
+}

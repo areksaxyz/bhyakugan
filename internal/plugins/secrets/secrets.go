@@ -25,7 +25,7 @@ type SecretPattern struct {
 	Name      string
 	Pattern   *regexp.Regexp
 	Severity  string
-	Validator *Validator 
+	Validator *Validator
 }
 
 var Patterns = []SecretPattern{
@@ -34,9 +34,9 @@ var Patterns = []SecretPattern{
 		Pattern:  regexp.MustCompile(`sk-[a-zA-Z0-9]{48}|sk-proj-[a-zA-Z0-9-_]{48,}`),
 		Severity: "Critical",
 		Validator: &Validator{
-			Method: "GET",
-			URL:    "https://api.openai.com/v1/models",
-			Headers: map[string]string{"Authorization": "Bearer %s"},
+			Method:       "GET",
+			URL:          "https://api.openai.com/v1/models",
+			Headers:      map[string]string{"Authorization": "Bearer %s"},
 			ExpectedCode: 200,
 		},
 	},
@@ -60,16 +60,16 @@ var Patterns = []SecretPattern{
 		Pattern:  regexp.MustCompile(`hf_[a-zA-Z0-9]{34}`),
 		Severity: "High",
 		Validator: &Validator{
-			Method: "GET",
-			URL:    "https://huggingface.co/api/whoami-v2",
-			Headers: map[string]string{"Authorization": "Bearer %s"},
+			Method:       "GET",
+			URL:          "https://huggingface.co/api/whoami-v2",
+			Headers:      map[string]string{"Authorization": "Bearer %s"},
 			ExpectedCode: 200,
 		},
 	},
 	{
-		Name:     "AWS Access Key",
-		Pattern:  regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
-		Severity: "Info", // Downgraded to Info (Unvalidated)
+		Name:      "AWS Access Key",
+		Pattern:   regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
+		Severity:  "Info", // Downgraded to Info (Unvalidated)
 		Validator: nil,
 	},
 	{
@@ -78,9 +78,9 @@ var Patterns = []SecretPattern{
 		Severity: "Info",
 		// Validation to distinguish Junk vs Real Key
 		Validator: &Validator{
-			Method: "GET",
-			URL:    "https://www.googleapis.com/language/translate/v2?key=%s&q=hello&target=es", 
-			ExpectedCode: 200, 
+			Method:       "GET",
+			URL:          "https://www.googleapis.com/language/translate/v2?key=%s&q=hello&target=es",
+			ExpectedCode: 200,
 		},
 	},
 	{
@@ -99,9 +99,9 @@ var Patterns = []SecretPattern{
 		Pattern:  regexp.MustCompile(`xoxb-[0-9]{11,}-[0-9]{11,}-[0-9a-zA-Z]{24}`),
 		Severity: "Critical",
 		Validator: &Validator{
-			Method: "POST",
-			URL:    "https://slack.com/api/auth.test",
-			Headers: map[string]string{"Authorization": "Bearer %s", "Content-Type": "application/json"},
+			Method:          "POST",
+			URL:             "https://slack.com/api/auth.test",
+			Headers:         map[string]string{"Authorization": "Bearer %s", "Content-Type": "application/json"},
 			ExpectedCode:    200,
 			ExpectedContent: "\"ok\":true",
 		},
@@ -111,56 +111,56 @@ var Patterns = []SecretPattern{
 		Pattern:  regexp.MustCompile(`ghp_[0-9a-zA-Z]{36}`),
 		Severity: "Critical",
 		Validator: &Validator{
-			Method: "GET",
-			URL:    "https://api.github.com/user",
-			Headers: map[string]string{"Authorization": "token %s"},
+			Method:       "GET",
+			URL:          "https://api.github.com/user",
+			Headers:      map[string]string{"Authorization": "token %s"},
 			ExpectedCode: 200,
 		},
 	},
 	{
-		Name:     "Heroku API Key",
+		Name: "Heroku API Key",
 		// Stricter Regex: Must be preceded by 'heroku'
-		Pattern:  regexp.MustCompile(`(?i)(?:heroku).{0,20}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`), 
+		Pattern:  regexp.MustCompile(`(?i)(?:heroku).{0,20}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`),
 		Severity: "Medium",
 		Validator: &Validator{
-			Method: "POST",
-			URL:    "https://api.heroku.com/apps",
-			Headers: map[string]string{"Accept": "application/vnd.heroku+json; version=3", "Authorization": "Bearer %s"},
+			Method:       "POST",
+			URL:          "https://api.heroku.com/apps",
+			Headers:      map[string]string{"Accept": "application/vnd.heroku+json; version=3", "Authorization": "Bearer %s"},
 			ExpectedCode: 200,
 		},
 	},
 	{
-		Name:     "Private Key",
-		Pattern:  regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |PGP )?PRIVATE KEY-----.*?-----END (?:RSA |EC |PGP )?PRIVATE KEY-----`),
-		Severity: "High", // High (Unvalidated Credential)
+		Name:      "Private Key",
+		Pattern:   regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |PGP )?PRIVATE KEY-----\s*[A-Za-z0-9+/=\r\n]{64,}\s*-----END (?:RSA |EC |PGP )?PRIVATE KEY-----`),
+		Severity:  "High", // High (Unvalidated Credential)
 		Validator: nil,
 	},
 	{
-		Name:     "CodeIgniter DB Config",
-		Pattern:  regexp.MustCompile(`'password'\s*=>\s*'[^']+'`),
-		Severity: "Medium", // Default to Medium (Potential Config Leak)
-		Validator: nil, 
+		Name:      "CodeIgniter DB Config",
+		Pattern:   regexp.MustCompile(`'password'\s*=>\s*'[^']+'`),
+		Severity:  "Medium", // Default to Medium (Potential Config Leak)
+		Validator: nil,
 		// Note: The pattern itself ensures a password assignment is present.
 		// However, to be strict as requested:
 		// If it matches, it means we found `'password' => '...'`.
 		// We will treat this as HIGH in the detection logic if valid, but base definition starts lower to be safe.
 	},
 	{
-		Name:     "SQL Dump (Plaintext Admin)",
-		Pattern:  regexp.MustCompile(`(?i)INSERT\s+INTO.*(?:user|admin|account).*(?:VALUES|\().*`), 
-		Severity: "Critical",
+		Name:      "SQL Dump (Plaintext Admin)",
+		Pattern:   regexp.MustCompile(`(?i)INSERT\s+INTO.*(?:user|admin|account).*(?:VALUES|\().*`),
+		Severity:  "Critical",
 		Validator: nil,
 	},
 	{
-		Name:     "SQL Dump (PII Data)",
-		Pattern:  regexp.MustCompile(`(?i)INSERT\s+INTO.*(?:donatur|member|customer).*(?:VALUES|\().*`),
-		Severity: "High",
+		Name:      "SQL Dump (PII Data)",
+		Pattern:   regexp.MustCompile(`(?i)INSERT\s+INTO.*(?:donatur|member|customer).*(?:VALUES|\().*`),
+		Severity:  "High",
 		Validator: nil,
 	},
 	{
-		Name:     "Database Backup File",
-		Pattern:  regexp.MustCompile(`(?i)\b[a-z0-9._/-]{0,120}(?:backup|dump|db)[a-z0-9._/-]{0,120}\.sql\b`),
-		Severity: "Info", 
+		Name:      "Database Backup File",
+		Pattern:   regexp.MustCompile(`(?i)\b[a-z0-9._/-]{0,120}(?:backup|dump|db)[a-z0-9._/-]{0,120}\.sql\b`),
+		Severity:  "Info",
 		Validator: nil,
 	},
 }
@@ -169,13 +169,13 @@ var Patterns = []SecretPattern{
 func isSQLContent(content string) bool {
 	upper := strings.ToUpper(content)
 	// Check for SQL header signatures or common statements
-	if strings.Contains(upper, "CREATE TABLE") || 
-	   strings.Contains(upper, "INSERT INTO") || 
-	   strings.Contains(upper, "MYSQLDUMP") || 
-	   strings.Contains(upper, "-- MYSQL DUMP") ||
-	   strings.Contains(upper, "SQLITE FORMAT") ||
-	   strings.Contains(upper, "DROP TABLE") ||
-	   strings.Contains(upper, "ALTER TABLE") {
+	if strings.Contains(upper, "CREATE TABLE") ||
+		strings.Contains(upper, "INSERT INTO") ||
+		strings.Contains(upper, "MYSQLDUMP") ||
+		strings.Contains(upper, "-- MYSQL DUMP") ||
+		strings.Contains(upper, "SQLITE FORMAT") ||
+		strings.Contains(upper, "DROP TABLE") ||
+		strings.Contains(upper, "ALTER TABLE") {
 		return true
 	}
 	return false
@@ -184,7 +184,9 @@ func isSQLContent(content string) bool {
 // Scan checks the response body for secrets
 func Scan(url string, client *http.Client, onFound func(core.Finding)) {
 	resp, err := client.Get(url)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
@@ -203,7 +205,10 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				rawKey = m[len(m)-1]
 			}
 			cleanKey := strings.Trim(rawKey, ` "'=`)
-			
+			if p.Name == "Private Key" && !isLikelyRealPrivateKeyBlock(cleanKey) {
+				continue
+			}
+
 			// Ignore placeholders / documentation tokens
 			upperKey := strings.ToUpper(cleanKey)
 			if strings.Contains(upperKey, "EXAMPLE") ||
@@ -218,7 +223,9 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				continue
 			}
 
-			if seen[cleanKey] { continue }
+			if seen[cleanKey] {
+				continue
+			}
 			seen[cleanKey] = true
 
 			detail := fmt.Sprintf("Found %s pattern.", p.Name)
@@ -228,15 +235,15 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 			// If we matched the pattern (likely in the URL/Link), we MUST verify the content actually looks like SQL.
 			// This prevents Soft 404s on .sql files from being reported.
 			if p.Name == "Database Backup File" {
-				// 1. If the match is just the filename in a directory listing or link, 
+				// 1. If the match is just the filename in a directory listing or link,
 				// we usually scan the CONTENT of that file separately (via crawling).
 				// But here `content` is the body of the page we are scanning.
 				// If we are scanning `index.html` and it links to `backup.sql`, that's a finding (Info).
 				// BUT if we are scanning `backup.sql` itself, we need to check content.
-				
+
 				// Case A: Pattern matched inside the body (Link Discovery) -> Info
 				// Case B: We are scanning the file itself (sourceURL ends in .sql) -> Content Check
-				
+
 				if strings.HasSuffix(strings.ToLower(sourceURL), ".sql") {
 					if !isSQLContent(content) {
 						continue // False Positive (Soft 404 or non-SQL content)
@@ -248,7 +255,7 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 					continue
 				}
 			}
-			
+
 			// Special handling for CodeIgniter Config
 			if p.Name == "CodeIgniter DB Config" {
 				// The regex matches 'password' => '...', so we know it has a password candidate.
@@ -268,7 +275,7 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 					// Skip validation loop
 				} else {
 					status, msg := verifyKey(cleanKey, p.Validator)
-					
+
 					switch status {
 					case "Valid":
 						severity = "Critical"
@@ -299,17 +306,49 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 	}
 }
 
+func isLikelyRealPrivateKeyBlock(block string) bool {
+	if strings.Contains(block, `replace("-----BEGIN PRIVATE KEY-----"`) ||
+		strings.Contains(block, `replace("-----END PRIVATE KEY-----"`) ||
+		strings.Contains(block, `REPLACE("-----BEGIN PRIVATE KEY-----"`) ||
+		strings.Contains(block, `REPLACE("-----END PRIVATE KEY-----"`) {
+		return false
+	}
+
+	re := regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |PGP )?PRIVATE KEY-----\s*([A-Za-z0-9+/=\r\n]+)\s*-----END (?:RSA |EC |PGP )?PRIVATE KEY-----`)
+	m := re.FindStringSubmatch(block)
+	if len(m) < 2 {
+		return false
+	}
+
+	payload := strings.TrimSpace(m[1])
+	if payload == "" {
+		return false
+	}
+	if strings.ContainsAny(payload, `"'\{\}\[\],;`) {
+		return false
+	}
+
+	compact := strings.ReplaceAll(strings.ReplaceAll(payload, "\n", ""), "\r", "")
+	if len(compact) < 128 {
+		return false
+	}
+
+	return strings.Count(payload, "\n") >= 2
+}
+
 // status: Valid, Restricted, Invalid, Error
 func verifyKey(key string, v *Validator) (string, string) {
 	client := &http.Client{Timeout: 5 * time.Second}
-	
-targetURL := v.URL
+
+	targetURL := v.URL
 	if strings.Contains(targetURL, "%s") {
 		targetURL = fmt.Sprintf(targetURL, key)
 	}
 
 	req, err := http.NewRequest(v.Method, targetURL, nil)
-	if err != nil { return "Error", err.Error() }
+	if err != nil {
+		return "Error", err.Error()
+	}
 
 	for k, val := range v.Headers {
 		if strings.Contains(val, "%s") {
@@ -324,7 +363,9 @@ targetURL := v.URL
 	}
 
 	resp, err := client.Do(req)
-	if err != nil { return "Error", err.Error() }
+	if err != nil {
+		return "Error", err.Error()
+	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
@@ -337,7 +378,7 @@ targetURL := v.URL
 				return "Invalid", "Content mismatch"
 			}
 		}
-		
+
 		// Additional Anti-FP: Check for Google/Standard denial keywords in body
 		if strings.Contains(bodyStr, "REQUEST_DENIED") || strings.Contains(bodyStr, "API_KEY_INVALID") || strings.Contains(bodyStr, "key is invalid") {
 			return "Invalid", "Denied by Provider"
@@ -354,18 +395,18 @@ targetURL := v.URL
 	// 3. Check Invalid (400, 401, 404 depending on API)
 	// For most APIs, 401 = Invalid Key. 400 = Bad Request (Could be valid key but missing params).
 	// Anthropic exception: 400 is "Valid Key but bad request".
-	// Google exception: 400 is "Bad Request" (Key might be invalid OR valid). 
+	// Google exception: 400 is "Bad Request" (Key might be invalid OR valid).
 	// To be safe: If code is 4xx/5xx and NOT expected, assume Invalid OR Restricted.
-	
+
 	// Refined Logic:
 	// If 400 -> "Invalid" for Google (usually INVALID_ARGUMENT or API_KEY_INVALID)
 	// If 401 -> "Invalid"
 	// If 5xx -> "Error"
-	
+
 	if resp.StatusCode == 401 {
 		return "Invalid", "401 Unauthorized"
 	}
-	
+
 	if resp.StatusCode >= 500 {
 		return "Error", fmt.Sprintf("Server Error %d", resp.StatusCode)
 	}

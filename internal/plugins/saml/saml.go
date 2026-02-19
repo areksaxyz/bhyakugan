@@ -3,6 +3,7 @@ package saml
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,7 +16,6 @@ var SAMLEndpoints = []string{
 	"/saml/acs",
 	"/saml2/acs",
 	"/SAML2/POST",
-	"/login/callback",
 	"/auth/saml/callback",
 	"/saml/consume",
 }
@@ -46,7 +46,11 @@ func checkSAMLEndpoint(target string, client *http.Client, onFound func(core.Fin
 	if err != nil {
 		return
 	}
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if !shouldProbeSAMLEndpoint(target, resp.StatusCode, string(body)) {
+		return
+	}
 
 	// Endpoints that accept SAML usually return 405 (Method Not Allowed) or 400 on GET
 	if resp.StatusCode == 405 || resp.StatusCode == 200 || resp.StatusCode == 400 {
@@ -58,6 +62,21 @@ func checkSAMLEndpoint(target string, client *http.Client, onFound func(core.Fin
 		// 3. Test XML Comment Injection
 		testCommentInjection(target, client, onFound)
 	}
+}
+
+func shouldProbeSAMLEndpoint(target string, statusCode int, body string) bool {
+	bodyLower := strings.ToLower(body)
+	bodyHasSAMLSignal := strings.Contains(bodyLower, "saml") ||
+		strings.Contains(bodyLower, "assertionconsumer") ||
+		strings.Contains(bodyLower, "sso")
+
+	// 200 pages must explicitly contain SAML signals.
+	if statusCode == 200 && !bodyHasSAMLSignal {
+		return false
+	}
+
+	// 400/405 are often SAML endpoints expecting POST payload.
+	return statusCode == 200 || statusCode == 400 || statusCode == 405
 }
 
 func testSignatureStripping(target string, client *http.Client, onFound func(core.Finding)) {
@@ -146,14 +165,6 @@ func testCommentInjection(target string, client *http.Client, onFound func(core.
 	}
 	defer resp.Body.Close()
 
-	// Heuristic check for success
-	if resp.StatusCode == 200 || resp.StatusCode == 302 {
-		// Log discovery
-		onFound(core.Finding{
-			Type:     "SAML Attack Surface",
-			Target:   target,
-			Detail:   "SAML endpoints detected. XML injection testing performed, no confirmed exploitation observed.",
-			Severity: "Info",
-		})
-	}
+	// Do not report informational-only SAML probing to avoid noisy false positives.
+	_ = onFound
 }

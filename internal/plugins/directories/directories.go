@@ -115,7 +115,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				bodyLower := strings.ToLower(bodyStr)
 
 				isHTML := strings.Contains(bodyLower, "<html") || strings.Contains(bodyLower, "<!doctype")
-				hasSecret := strings.Contains(bodyLower, "db_password") || strings.Contains(bodyLower, "aws_access_key") || strings.Contains(bodyLower, "api_key") || strings.Contains(bodyLower, "begin rsa private key")
+				hasSecret := hasStrongSecretEvidence(bodyLower)
 
 				// --- ADVANCED ANTI-FP LOGIC ---
 				
@@ -175,12 +175,9 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					severity := "Info" 
 					detail := fmt.Sprintf("Accessible Path (200 OK, Len: %d)", bodyLen)
 
-					// 1. Path-based overrides
+					// 1. Path-based classification (conservative)
 					pathLower := strings.ToLower(check.Path)
-					if strings.Contains(pathLower, ".env") || strings.Contains(pathLower, "credentials") || strings.Contains(pathLower, "secrets") || strings.Contains(pathLower, "db.sql") {
-						severity = "Critical"
-						findingType = "Critical Configuration Leak"
-					} else if strings.Contains(pathLower, ".htaccess") || strings.Contains(pathLower, "web.config") || strings.Contains(pathLower, "config.php") || strings.Contains(pathLower, ".bak") {
+					if strings.Contains(pathLower, ".htaccess") || strings.Contains(pathLower, "web.config") || strings.Contains(pathLower, "config.php") || strings.Contains(pathLower, ".bak") {
 						severity = "High"
 						findingType = "Sensitive Config/Backup Exposed"
 					} else if strings.Contains(pathLower, "logs") || strings.Contains(pathLower, ".log") {
@@ -188,11 +185,19 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 						findingType = "Log File Exposed"
 					}
 
-					// 2. Content-Aware Upgrade
+					// 2. Content-aware upgrade (requires evidence, not path name)
 					if hasSecret {
 						severity = "Critical"
 						findingType = "Critical Data Leak in Path"
 						detail = "Path contains extremely sensitive information (API Keys, Passwords, or Private Keys) in the response body."
+					} else if strings.Contains(pathLower, ".sql") && isLikelySQLDump(bodyStr) {
+						severity = "High"
+						findingType = "Database Dump Exposed"
+						detail = "SQL dump content confirmed from response body."
+					} else if (strings.Contains(pathLower, ".env") || strings.Contains(pathLower, "credentials")) && hasConfigAssignments(bodyStr) {
+						severity = "High"
+						findingType = "Sensitive Config Exposed"
+						detail = "Configuration-style key/value assignments found in response."
 					} else if strings.Contains(bodyLower, "index of /") || strings.Contains(bodyLower, "parent directory") {
 						if severity != "Critical" && severity != "High" {
 							severity = "Medium"
@@ -217,6 +222,43 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		}(check)
 	}
 	wg.Wait()
+}
+
+func hasStrongSecretEvidence(bodyLower string) bool {
+	indicators := []string{
+		"aws_access_key_id",
+		"aws_secret_access_key",
+		"begin rsa private key",
+		"begin ec private key",
+		"begin openssh private key",
+		"xoxb-",
+		"sk_live_",
+		"sk-proj-",
+		"api_key=",
+		"db_password=",
+	}
+	for _, s := range indicators {
+		if strings.Contains(bodyLower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigAssignments(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "password=") ||
+		strings.Contains(lower, "db_password") ||
+		strings.Contains(lower, "database_url") ||
+		strings.Contains(lower, "api_key=") ||
+		strings.Contains(lower, "secret_key")
+}
+
+func isLikelySQLDump(body string) bool {
+	upper := strings.ToUpper(body)
+	return strings.Contains(upper, "CREATE TABLE") ||
+		strings.Contains(upper, "INSERT INTO") ||
+		strings.Contains(upper, "-- MYSQL DUMP")
 }
 
 func stripHTML(s string) string {

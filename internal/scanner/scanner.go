@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"net/url"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
 	"github.com/yupiyy/bhyakugan/internal/crawler"
@@ -37,16 +37,19 @@ import (
 )
 
 type Options struct {
-	Target      string
-	Timeout     int
-	PayloadFile string
-	Depth       int
-	SharedJS    *sync.Map 
+	Target       string
+	Timeout      int
+	PayloadFile  string
+	Depth        int
+	SharedJS     *sync.Map
+	Mode         string
+	Fast         bool
+	MaxEndpoints int
 }
 
 func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 	ctx := core.ScanContext{Language: "unknown", Framework: "unknown", WAF: "none", Baseline: -1}
-	
+
 	var resp *http.Response
 	var err error
 
@@ -61,15 +64,15 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 
-	if err != nil { 
-		return ctx 
+	if err != nil {
+		return ctx
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	ctx.Baseline = len(body)
 	bodyStr := strings.ToLower(string(body))
-	
+
 	headers := resp.Header
 	server := strings.ToLower(headers.Get("Server"))
 	poweredBy := strings.ToLower(headers.Get("X-Powered-By"))
@@ -99,9 +102,37 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 }
 
 func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
-	scanSem := make(chan struct{}, 30)
-	crawlSem := make(chan struct{}, 15) 
-	jsSem := make(chan struct{}, 10) 
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	if mode == "" {
+		mode = "strict"
+	}
+	if mode != "strict" && mode != "balanced" && mode != "aggressive" {
+		mode = "strict"
+	}
+
+	reportFinding := func(f core.Finding) {
+		f.Confidence = classifyConfidence(f)
+		if !shouldReportFinding(mode, f) {
+			return
+		}
+		onFound(f)
+	}
+
+	scanConcurrency := 30
+	crawlConcurrency := 15
+	jsConcurrency := 10
+	if opts.Fast {
+		scanConcurrency = 10
+		crawlConcurrency = 5
+		jsConcurrency = 4
+	}
+	scanSem := make(chan struct{}, scanConcurrency)
+	crawlSem := make(chan struct{}, crawlConcurrency)
+	jsSem := make(chan struct{}, jsConcurrency)
+	maxEndpoints := opts.MaxEndpoints
+	if maxEndpoints <= 0 && opts.Fast {
+		maxEndpoints = 25
+	}
 
 	ctx := profileTarget(opts.Target, client)
 	if ctx.Baseline == -1 {
@@ -111,13 +142,15 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	fmt.Printf("[*] Profile: %s | Lang=%s | WAF=%s\n", opts.Target, ctx.Language, ctx.WAF)
 
 	baselineURL := opts.Target
-	if !strings.HasSuffix(baselineURL, "/") { baselineURL += "/" }
+	if !strings.HasSuffix(baselineURL, "/") {
+		baselineURL += "/"
+	}
 	baselineURL += "bhyakugan_baseline_test_404"
-	
+
 	reqM, _ := http.NewRequest("GET", opts.Target, nil)
 	utils.SetDefaultHeaders(reqM, opts.Target)
 	respM, errM := client.Do(reqM)
-	
+
 	var mainBody string
 	var mainHeaders http.Header
 	if errM == nil {
@@ -132,15 +165,27 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			start := time.Now()
+			fmt.Printf("[*] [%s] started\n", name)
 			f()
+			fmt.Printf("[*] [%s] done (%.1fs)\n", name, time.Since(start).Seconds())
 		}()
 	}
 
 	scannedEndpoints := make(map[string]bool)
 	var endpointMu sync.Mutex
+	endpointLimitNotified := false
 
 	scanEndpoint := func(url string, isRoot bool) {
 		endpointMu.Lock()
+		if !isRoot && maxEndpoints > 0 && len(scannedEndpoints) >= maxEndpoints {
+			if !endpointLimitNotified {
+				fmt.Printf("[*] Endpoint cap reached (%d). Skipping additional endpoints.\n", maxEndpoints)
+				endpointLimitNotified = true
+			}
+			endpointMu.Unlock()
+			return
+		}
 		if scannedEndpoints[url] {
 			endpointMu.Unlock()
 			return
@@ -158,48 +203,57 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		}
 
 		hasParams := strings.Contains(url, "?")
-		runP(func() { secrets.Scan(url, client, onFound) })
-		
-		if isRoot || hasParams {
-			runP(func() { vulns.Scan(url, client, opts.PayloadFile, onFound) })
-			runP(func() { rce.Scan(url, client, ctx, onFound) })
-			runP(func() { nosqli.Scan(url, client, ctx, onFound) })
-			runP(func() { sqli.Scan(url, client, ctx, onFound) })
-			runP(func() { ssrf.Scan(url, client, onFound) })
-			runP(func() { ssti.Scan(url, client, onFound) })
-			runP(func() { xpath.Scan(url, client, onFound) })
-			runP(func() { xslt.Scan(url, client, onFound) })
-			runP(func() { pp.Scan(url, client, onFound) })
+		runP(func() { secrets.Scan(url, client, reportFinding) })
+
+		if !opts.Fast && (isRoot || hasParams) {
+			runP(func() { vulns.Scan(url, client, opts.PayloadFile, reportFinding) })
+			runP(func() { rce.Scan(url, client, ctx, reportFinding) })
+			runP(func() { nosqli.Scan(url, client, ctx, reportFinding) })
+			runP(func() { sqli.Scan(url, client, ctx, reportFinding) })
+			runP(func() { ssrf.Scan(url, client, reportFinding) })
+			runP(func() { ssti.Scan(url, client, reportFinding) })
+			runP(func() { xpath.Scan(url, client, reportFinding) })
+			runP(func() { xslt.Scan(url, client, reportFinding) })
+			runP(func() { pp.Scan(url, client, reportFinding) })
 		}
 
-		if isRoot || strings.Contains(strings.ToLower(url), "login") || strings.Contains(strings.ToLower(url), "auth") {
-			runP(func() { wcd.Scan(url, client, onFound) })
-			runP(func() { typejuggling.Scan(url, client, ctx, onFound) })
+		if !opts.Fast && (isRoot || strings.Contains(strings.ToLower(url), "login") || strings.Contains(strings.ToLower(url), "auth")) {
+			runP(func() { wcd.Scan(url, client, reportFinding) })
+			runP(func() { typejuggling.Scan(url, client, ctx, reportFinding) })
 		}
-		
-		runP(func() { proxy.Scan(url, client, onFound) })
-		
+
+		if !opts.Fast {
+			runP(func() { proxy.Scan(url, client, reportFinding) })
+		}
+
 		if isRoot {
-			runP(func() { saml.Scan(url, client, onFound) })
-			runP(func() { graphql.Scan(url, client, onFound) })
-			runP(func() { git.Scan(url, client, onFound) })
+			if !opts.Fast {
+				runP(func() { saml.Scan(url, client, reportFinding) })
+			}
+			runP(func() { graphql.Scan(url, client, reportFinding) })
+			runP(func() { git.Scan(url, client, reportFinding) })
 		}
 		pWg.Wait()
 	}
 
 	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true) })
-	run("Directories", func() { directories.Scan(opts.Target, client, onFound) })
-	run("WebSocket", func() { websocket.Scan(opts.Target, client, onFound) })
-	run("ORM Leak", func() { ormleak.Scan(opts.Target, client, onFound) }) 
+	run("Directories", func() { directories.Scan(opts.Target, client, reportFinding) })
+	if !opts.Fast {
+		run("WebSocket", func() { websocket.Scan(opts.Target, client, reportFinding) })
+		run("ORM Leak", func() { ormleak.Scan(opts.Target, client, reportFinding) })
+	}
 
 	if mainBody != "" {
-		run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, onFound) })
-		
+		run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, reportFinding) })
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			maxDepth := opts.Depth
-			
+			if opts.Fast && maxDepth > 1 {
+				maxDepth = 1
+			}
+
 			type CrawlJob struct {
 				URL   string
 				Depth int
@@ -207,7 +261,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			queue := make(chan CrawlJob, 1000)
 			visited := make(map[string]bool)
 			var visitedMu sync.Mutex
-			
+
 			var scanWg sync.WaitGroup
 			var crawlWg sync.WaitGroup
 
@@ -222,7 +276,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 					go func(current CrawlJob) {
 						defer func() { <-crawlSem }()
 						defer crawlWg.Done()
-						
+
 						if current.Depth > 0 {
 							lowerURL := strings.ToLower(current.URL)
 							isStatic := false
@@ -245,7 +299,9 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 							}
 						}
 
-						if current.Depth >= maxDepth { return }
+						if current.Depth >= maxDepth {
+							return
+						}
 
 						var extractWg sync.WaitGroup
 						var linksMu sync.Mutex
@@ -285,7 +341,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						}()
 
 						extractWg.Wait()
-						
+
 						visitedMu.Lock()
 						for _, link := range extractedLinks {
 							if !visited[link] {
@@ -307,11 +363,11 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			// Start initial job
 			crawlWg.Add(1)
 			queue <- CrawlJob{URL: opts.Target, Depth: 0}
-			
+
 			// Wait for all crawling to finish, then close queue
 			crawlWg.Wait()
 			close(queue)
-			
+
 			// Wait for all scans triggered by crawling to finish
 			scanWg.Wait()
 		}()
@@ -321,7 +377,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			defer wg.Done()
 			jsRegex := regexp.MustCompile(`src=["'](.*?\.js)["']`)
 			matches := jsRegex.FindAllStringSubmatch(mainBody, -1)
-			
+
 			var jsWg sync.WaitGroup
 			for _, m := range matches {
 				if len(m) > 1 {
@@ -331,38 +387,96 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						jsURL = u.ResolveReference(&url.URL{Path: jsURL}).String()
 					}
 					if opts.SharedJS != nil {
-						if _, loaded := opts.SharedJS.LoadOrStore(jsURL, true); loaded { continue }
+						if _, loaded := opts.SharedJS.LoadOrStore(jsURL, true); loaded {
+							continue
+						}
 					}
-					
+
 					jsWg.Add(1)
 					go func(u string) {
 						defer jsWg.Done()
 						select {
 						case jsSem <- struct{}{}:
 							defer func() { <-jsSem }()
-							jsanalyzer.ScanJS(u, client, nil, onFound) // Pass nil as we handle WaitGroup locally in this goroutine
-						case <-time.After(10 * time.Second):
+							jsanalyzer.ScanJS(u, client, nil, reportFinding) // Pass nil as we handle WaitGroup locally in this goroutine
+						case <-time.After(4 * time.Second):
 							// Don't wait forever for a slot in jsSem
 							return
 						}
 					}(jsURL)
 				}
 			}
-			
+
 			// Wait for all JS in this host with a timeout
 			done := make(chan struct{})
 			go func() {
 				jsWg.Wait()
 				close(done)
 			}()
-			
+
+			jsTimeout := 2 * time.Minute
+			if opts.Fast {
+				jsTimeout = 45 * time.Second
+			}
 			select {
 			case <-done:
-			case <-time.After(2 * time.Minute):
+			case <-time.After(jsTimeout):
 				fmt.Printf("[!] JS Analysis timeout for %s\n", opts.Target)
 			}
 		}()
 	}
 	wg.Wait()
 	fmt.Printf("[*] Scan Complete for %s\n", opts.Target)
+}
+
+func classifyConfidence(f core.Finding) string {
+	if strings.TrimSpace(f.Confidence) != "" {
+		return strings.ToLower(strings.TrimSpace(f.Confidence))
+	}
+	d := strings.ToLower(f.Detail)
+	t := strings.ToLower(f.Type)
+
+	if strings.Contains(d, "verification failed") ||
+		strings.Contains(d, "unverified") ||
+		strings.Contains(d, "invalid") ||
+		strings.Contains(d, "potential ") ||
+		strings.Contains(d, "no confirmed exploitation") {
+		return "noisy"
+	}
+
+	if strings.Contains(d, "confirmed") ||
+		strings.Contains(d, "verified") ||
+		strings.Contains(d, "found output") ||
+		strings.Contains(d, "system file read") ||
+		strings.Contains(d, "source disclosure") ||
+		strings.Contains(d, "introspection query enabled") {
+		return "confirmed"
+	}
+
+	if strings.Contains(t, "path discovered") ||
+		strings.Contains(t, "recon") ||
+		strings.Contains(t, "jwt discovered") {
+		return "probable"
+	}
+
+	return "probable"
+}
+
+func shouldReportFinding(mode string, f core.Finding) bool {
+	switch mode {
+	case "aggressive":
+		return true
+	case "balanced":
+		return f.Confidence != "noisy"
+	default: // strict
+		if f.Confidence == "noisy" {
+			return false
+		}
+		// Keep strict focused on higher-confidence bug bounty outputs.
+		if f.Confidence == "confirmed" {
+			return true
+		}
+		sev := strings.ToLower(f.Severity)
+		return sev == "critical" || sev == "high"
+	}
 }

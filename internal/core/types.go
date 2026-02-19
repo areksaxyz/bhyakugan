@@ -6,6 +6,7 @@ type Finding struct {
 	Target   string // The URL or Host where it was found
 	Detail   string // Specifics (e.g., the key itself, the path)
 	Severity string // Critical, High, Medium, Low, Info
+	Confidence string // confirmed, probable, noisy
 }
 
 // ScanContext holds intelligence about the current target

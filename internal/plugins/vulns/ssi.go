@@ -16,7 +16,6 @@ type SSIPayload struct {
 }
 
 var SSIPayloads = []SSIPayload{
-	{"SSI Echo (Date)", "?ssi=<!--#echo var=\"DATE_LOCAL\" -->", "Feb 01 2026"}, 
 	{"SSI Exec (ID)", "?ssi=<!--#exec cmd=\"id\" -->", "uid="},
 	{"SSI PrintEnv", "?ssi=<!--#printenv -->", "DOCUMENT_ROOT"},
 	{"ESI Debug", "?ssi=<esi:debug/>", "ESI Debug"},
@@ -39,8 +38,14 @@ func ScanSSI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 		body, _ := io.ReadAll(resp.Body)
 		bodyStr := string(body)
+		lowerBody := strings.ToLower(bodyStr)
+		payloadLower := strings.ToLower(p.Payload)
 
 		if strings.Contains(bodyStr, p.Check) {
+			// Anti-reflection: avoid reporting when payload is merely echoed back.
+			if strings.Contains(lowerBody, payloadLower) {
+				continue
+			}
 			fmt.Printf("[!] POSITIVE MATCH: %s at %s\n", p.Name, target)
 			onFound(core.Finding{
 				Type:     "SSI/ESI Injection",

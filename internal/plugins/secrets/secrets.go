@@ -159,7 +159,7 @@ var Patterns = []SecretPattern{
 	},
 	{
 		Name:     "Database Backup File",
-		Pattern:  regexp.MustCompile(`(?i)(?:db_|backup|dump).*\.sql`),
+		Pattern:  regexp.MustCompile(`(?i)\b[a-z0-9._/-]{0,120}(?:backup|dump|db)[a-z0-9._/-]{0,120}\.sql\b`),
 		Severity: "Info", 
 		Validator: nil,
 	},
@@ -204,9 +204,17 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 			}
 			cleanKey := strings.Trim(rawKey, ` "'=`)
 			
-			// Ignore placeholders
+			// Ignore placeholders / documentation tokens
 			upperKey := strings.ToUpper(cleanKey)
-			if strings.Contains(upperKey, "EXAMPLE") || strings.Contains(upperKey, "TEST") || strings.Contains(upperKey, "MOCK") {
+			if strings.Contains(upperKey, "EXAMPLE") ||
+				strings.Contains(upperKey, "TEST") ||
+				strings.Contains(upperKey, "MOCK") ||
+				strings.Contains(upperKey, "YOUR_") ||
+				strings.Contains(upperKey, "USERNAME") ||
+				strings.Contains(upperKey, "PASSWORD") ||
+				strings.Contains(upperKey, "TOKEN") ||
+				strings.Contains(upperKey, "<") ||
+				strings.Contains(upperKey, ">") {
 				continue
 			}
 
@@ -229,15 +237,15 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				// Case A: Pattern matched inside the body (Link Discovery) -> Info
 				// Case B: We are scanning the file itself (sourceURL ends in .sql) -> Content Check
 				
-				if strings.HasSuffix(sourceURL, ".sql") {
+				if strings.HasSuffix(strings.ToLower(sourceURL), ".sql") {
 					if !isSQLContent(content) {
 						continue // False Positive (Soft 404 or non-SQL content)
 					}
 					severity = "Critical" // It's a verified dump!
 					detail = "Verified SQL Dump file (Header/Structure confirmed)."
 				} else {
-					severity = "Info"
-					detail = fmt.Sprintf("Potential Database Backup File reference: %s", cleanKey)
+					// Do not report backup.sql mention inside docs/tutorial pages.
+					continue
 				}
 			}
 			
@@ -269,12 +277,11 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 						severity = "Info"
 						detail = fmt.Sprintf("VERIFIED %s (Restricted): %s (%s)", p.Name, cleanKey, msg)
 					case "Invalid":
-						severity = "Info"
-						detail = fmt.Sprintf("Invalid %s found (Verification Failed): %s", p.Name, msg)
+						// Invalid key is informational noise, skip reporting.
+						continue
 					case "Error":
-						// Report as Low/Info if verification failed due to network
-						severity = "Low"
-						detail = fmt.Sprintf("Potential %s (Verification Failed): %s. Err: %s", p.Name, cleanKey, msg)
+						// Network/API errors during validation create noisy false positives.
+						continue
 					}
 				}
 			} else if severity == "High" {

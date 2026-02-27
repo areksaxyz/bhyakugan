@@ -1,13 +1,17 @@
 package sqli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
 	"github.com/yupiyy/bhyakugan/internal/payloadrepo"
@@ -19,6 +23,31 @@ type SQLiPayload struct {
 	Payload  string
 	Type     string
 	Expected string
+}
+
+const (
+	baselineSampleCount = 5
+	timeZScoreThreshold = 3.0
+	minTimeDeltaSeconds = 2.5
+	minTimeDiffEntropy  = 0.08
+	minTimeStdDevFloor  = 0.05
+	maxDisplayedZScore  = 200.0
+)
+
+type timingBaseline struct {
+	mean                 float64
+	stdDev               float64
+	bodyHash             string
+	timeDetectionEnabled bool
+}
+
+type timedHTTPResponse struct {
+	duration   float64
+	statusCode int
+	bodyLower  string
+	bodyHash   string
+	redirects  int
+	err        error
 }
 
 var DBErrors = map[string][]string{
@@ -94,28 +123,12 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 	}
 	q := u.Query()
 
-	startBase := time.Now()
-	reqBase, errReq := http.NewRequest("GET", baseURL, nil)
-	if errReq != nil {
-		return
-	}
-	utils.SetDefaultHeaders(reqBase, baseURL)
-	respBase, errBase := client.Do(reqBase)
-	baselineDuration := time.Since(startBase).Seconds()
-	if errBase != nil {
+	baseline, baselineBodyLower, err := collectBaseline(baseURL, client, baselineSampleCount)
+	if err != nil {
 		return
 	}
 
-	baselineBodyBytes, _ := io.ReadAll(respBase.Body)
-	respBase.Body.Close()
-	baselineBodyLower := strings.ToLower(string(baselineBodyBytes))
-
-	timeThreshold := baselineDuration + 4.0
-	if ctx.WAF == "cloudflare" {
-		timeThreshold += 2.0
-	}
-
-	if baselineDuration > 3.0 {
+	if baseline.mean > 3.0 {
 		return
 	}
 
@@ -150,7 +163,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 					target = fuzzU.String()
 
 					// Perform check for this parameter
-					checkTarget(target, payload, client, baselineDuration, timeThreshold, baselineBodyLower, &isAlreadyVulnerable, &foundMu, onFound)
+					checkTarget(target, payload, client, baseline, baselineBodyLower, &isAlreadyVulnerable, &foundMu, onFound)
 					if isAlreadyVulnerable {
 						return
 					}
@@ -159,7 +172,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 			} else {
 				// No parameters, fuzz ID
 				target = baseURL + "?id=" + url.QueryEscape(payload.Payload)
-				checkTarget(target, payload, client, baselineDuration, timeThreshold, baselineBodyLower, &isAlreadyVulnerable, &foundMu, onFound)
+				checkTarget(target, payload, client, baseline, baselineBodyLower, &isAlreadyVulnerable, &foundMu, onFound)
 			}
 		}(p)
 	}
@@ -167,42 +180,27 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 	ScanOracleLengthFilter(baseURL, client, onFound)
 }
 
-func checkTarget(target string, payload SQLiPayload, client *http.Client, baselineDuration, timeThreshold float64, baselineBodyLower string, isAlreadyVulnerable *bool, foundMu *sync.Mutex, onFound func(core.Finding)) {
-	start := time.Now()
-	req, errReq := http.NewRequest("GET", target, nil)
-	if errReq != nil {
+func checkTarget(target string, payload SQLiPayload, client *http.Client, baseline timingBaseline, baselineBodyLower string, isAlreadyVulnerable *bool, foundMu *sync.Mutex, onFound func(core.Finding)) {
+	res := performTimedRequest(client, target)
+	if res.err != nil {
 		return
-	}
-	utils.SetDefaultHeaders(req, target)
-	resp, err := client.Do(req)
-	duration := time.Since(start).Seconds()
-
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	bodyStr := string(bodyBytes)
-	bodyLower := strings.ToLower(bodyStr)
-
-	localThreshold := timeThreshold
-	if strings.Contains(payload.Name, "Cloudflare") {
-		localThreshold = baselineDuration + 5.0
 	}
 
 	isVulnerable := false
 	detail := ""
-	confidence := "confirmed"
+	confidence := "probable"
+	severity := "Medium"
 
 	for db, errors := range DBErrors {
 		for _, errStr := range errors {
-			if strings.Contains(bodyLower, strings.ToLower(errStr)) {
+			if strings.Contains(res.bodyLower, strings.ToLower(errStr)) {
 				if strings.Contains(baselineBodyLower, strings.ToLower(errStr)) {
 					continue
 				}
 				isVulnerable = true
-				detail = fmt.Sprintf("Found %s Error: %s", db, errStr)
+				detail = fmt.Sprintf("Error-based SQL signal: found %s error marker (%s). control_validation=true (marker absent in baseline), but boolean/time/union/data-extraction proof not confirmed.", db, errStr)
+				confidence = "probable"
+				severity = "Medium"
 				break
 			}
 		}
@@ -212,30 +210,80 @@ func checkTarget(target string, payload SQLiPayload, client *http.Client, baseli
 	}
 
 	if !isVulnerable && strings.Contains(payload.Name, "Time") {
-		if resp.StatusCode == 403 || resp.StatusCode == 406 || resp.StatusCode == 429 {
+		if !baseline.timeDetectionEnabled {
 			return
 		}
-		if duration >= localThreshold {
-			startV2 := time.Now()
-			reqV2, _ := http.NewRequest("GET", target, nil)
-			utils.SetDefaultHeaders(reqV2, target)
-			respV2, errV2 := client.Do(reqV2) // Capture response
-			if errV2 == nil {
-				defer respV2.Body.Close() // Close body!
-				verifyDuration := time.Since(startV2).Seconds()
-				if verifyDuration >= localThreshold {
-					isVulnerable = true
-					margin1 := duration - localThreshold
-					margin2 := verifyDuration - localThreshold
-					if margin1 >= 1.5 && margin2 >= 1.5 {
-						confidence = "confirmed"
-					} else {
-						confidence = "probable"
-					}
-					detail = fmt.Sprintf("Time-Based SQLi signal (req1=%.2fs req2=%.2fs threshold=%.2fs).", duration, verifyDuration, localThreshold)
-				}
-			}
+		// HTTP 000 guard.
+		if res.statusCode == 0 {
+			return
 		}
+		// Redirect guard.
+		if res.redirects > 1 {
+			return
+		}
+		if res.statusCode == 403 || res.statusCode == 406 || res.statusCode == 429 {
+			return
+		}
+		// Body hash guard.
+		if res.bodyHash == baseline.bodyHash {
+			return
+		}
+		margin1 := res.duration - baseline.mean
+		if margin1 < minTimeDeltaSeconds {
+			return
+		}
+		entropy1 := responseDiffEntropy(baselineBodyLower, res.bodyLower)
+		if entropy1 < minTimeDiffEntropy {
+			return
+		}
+		z1Raw := computeZScore(res.duration, baseline.mean, baseline.stdDev)
+		if z1Raw < timeZScoreThreshold {
+			return
+		}
+		z1 := clampZScore(z1Raw)
+
+		verifyRes := performTimedRequest(client, target)
+		if verifyRes.err != nil {
+			return
+		}
+		// HTTP 000 guard.
+		if verifyRes.statusCode == 0 {
+			return
+		}
+		// Redirect guard.
+		if verifyRes.redirects > 1 {
+			return
+		}
+		if verifyRes.statusCode == 403 || verifyRes.statusCode == 406 || verifyRes.statusCode == 429 {
+			return
+		}
+		// Body hash guard.
+		if verifyRes.bodyHash == baseline.bodyHash {
+			return
+		}
+		margin2 := verifyRes.duration - baseline.mean
+		if margin2 < minTimeDeltaSeconds {
+			return
+		}
+		entropy2 := responseDiffEntropy(baselineBodyLower, verifyRes.bodyLower)
+		if entropy2 < minTimeDiffEntropy {
+			return
+		}
+		z2Raw := computeZScore(verifyRes.duration, baseline.mean, baseline.stdDev)
+		if z2Raw < timeZScoreThreshold {
+			return
+		}
+		z2 := clampZScore(z2Raw)
+
+		isVulnerable = true
+		if margin1 >= 2.0 && margin2 >= 2.0 && z1Raw >= 4.5 && z2Raw >= 4.5 {
+			confidence = "probable"
+		} else {
+			confidence = "probable"
+		}
+		severity = "Medium"
+		detail = fmt.Sprintf("Time-Based SQLi signal (baseline_mean=%.2fs baseline_std=%.3f req1=%.2fs[z=%.2f,delta=%.2f,entropy=%.2f] req2=%.2fs[z=%.2f,delta=%.2f,entropy=%.2f]).",
+			baseline.mean, baseline.stdDev, res.duration, z1, margin1, entropy1, verifyRes.duration, z2, margin2, entropy2)
 	}
 
 	if isVulnerable {
@@ -243,8 +291,175 @@ func checkTarget(target string, payload SQLiPayload, client *http.Client, baseli
 		if !*isAlreadyVulnerable {
 			*isAlreadyVulnerable = true
 			fmt.Printf("[!] POSITIVE MATCH: %s at %s\n", payload.Name, target)
-			onFound(core.Finding{Type: "SQL Injection", Target: target, Detail: detail, Severity: "Critical", Confidence: confidence})
+			onFound(core.Finding{Type: "SQL Injection", Target: target, Detail: detail, Severity: severity, Confidence: confidence})
 		}
 		foundMu.Unlock()
 	}
+}
+
+func collectBaseline(target string, client *http.Client, sampleCount int) (timingBaseline, string, error) {
+	samples := make([]float64, 0, sampleCount)
+	hashFreq := make(map[string]int, sampleCount)
+	baselineBodyLower := ""
+	enableTimeDetection := true
+
+	for i := 0; i < sampleCount; i++ {
+		res := performTimedRequest(client, target)
+		if res.err != nil {
+			return timingBaseline{}, "", res.err
+		}
+		if baselineBodyLower == "" {
+			baselineBodyLower = res.bodyLower
+		}
+		samples = append(samples, res.duration)
+		hashFreq[res.bodyHash]++
+		if res.statusCode == 0 {
+			enableTimeDetection = false
+		}
+		if res.redirects > 1 {
+			enableTimeDetection = false
+		}
+	}
+
+	mean, stdDev := computeMeanStdDev(samples)
+	return timingBaseline{
+		mean:                 mean,
+		stdDev:               stdDev,
+		bodyHash:             dominantHash(hashFreq),
+		timeDetectionEnabled: enableTimeDetection,
+	}, baselineBodyLower, nil
+}
+
+func performTimedRequest(client *http.Client, target string) timedHTTPResponse {
+	start := time.Now()
+	req, errReq := http.NewRequest("GET", target, nil)
+	if errReq != nil {
+		return timedHTTPResponse{err: errReq}
+	}
+	utils.SetDefaultHeaders(req, target)
+	resp, err := client.Do(req)
+	duration := time.Since(start).Seconds()
+	if err != nil {
+		return timedHTTPResponse{duration: duration, statusCode: 0, err: err}
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	return timedHTTPResponse{
+		duration:   duration,
+		statusCode: resp.StatusCode,
+		bodyLower:  strings.ToLower(string(bodyBytes)),
+		bodyHash:   hashBody(bodyBytes),
+		redirects:  countRedirects(resp),
+	}
+}
+
+func hashBody(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func dominantHash(freq map[string]int) string {
+	bestHash := ""
+	bestCount := -1
+	for h, c := range freq {
+		if c > bestCount {
+			bestHash = h
+			bestCount = c
+		}
+	}
+	return bestHash
+}
+
+func countRedirects(resp *http.Response) int {
+	if resp == nil || resp.Request == nil {
+		return 0
+	}
+	count := 0
+	for prev := resp.Request.Response; prev != nil; prev = prev.Request.Response {
+		count++
+	}
+	return count
+}
+
+func computeMeanStdDev(samples []float64) (float64, float64) {
+	if len(samples) == 0 {
+		return 0, 0
+	}
+	sum := 0.0
+	for _, sample := range samples {
+		sum += sample
+	}
+	mean := sum / float64(len(samples))
+	variance := 0.0
+	for _, sample := range samples {
+		diff := sample - mean
+		variance += diff * diff
+	}
+	variance /= float64(len(samples))
+	return mean, math.Sqrt(variance)
+}
+
+func computeZScore(attackTime, meanBaseline, stdDev float64) float64 {
+	effectiveStdDev := math.Max(stdDev, minTimeStdDevFloor)
+	if effectiveStdDev <= 0 {
+		if attackTime > meanBaseline {
+			return math.Inf(1)
+		}
+		if attackTime < meanBaseline {
+			return math.Inf(-1)
+		}
+		return 0
+	}
+	return (attackTime - meanBaseline) / effectiveStdDev
+}
+
+func clampZScore(z float64) float64 {
+	if z > maxDisplayedZScore {
+		return maxDisplayedZScore
+	}
+	if z < -maxDisplayedZScore {
+		return -maxDisplayedZScore
+	}
+	return z
+}
+
+func responseDiffEntropy(base, attack string) float64 {
+	baseTokens := tokenizeForEntropy(base)
+	attackTokens := tokenizeForEntropy(attack)
+	if len(baseTokens) == 0 && len(attackTokens) == 0 {
+		return 0
+	}
+
+	union := make(map[string]struct{}, len(baseTokens)+len(attackTokens))
+	for _, t := range baseTokens {
+		union[t] = struct{}{}
+	}
+	intersection := 0
+	baseSet := make(map[string]struct{}, len(baseTokens))
+	for _, t := range baseTokens {
+		baseSet[t] = struct{}{}
+	}
+	for _, t := range attackTokens {
+		if _, ok := baseSet[t]; ok {
+			intersection++
+		}
+		union[t] = struct{}{}
+	}
+
+	if len(union) == 0 {
+		return 0
+	}
+	jaccard := float64(intersection) / float64(len(union))
+	return 1.0 - jaccard
+}
+
+func tokenizeForEntropy(s string) []string {
+	normalized := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return unicode.ToLower(r)
+		}
+		return ' '
+	}, s)
+	return strings.Fields(normalized)
 }

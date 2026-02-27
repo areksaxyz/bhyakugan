@@ -1,8 +1,8 @@
 # Binaries
 bhyakugan
 bhyakugan_bin
-mockserver
-mockserver_bin
+/mockserver
+/mockserver_bin
 main
 *.exe
 *.exe~

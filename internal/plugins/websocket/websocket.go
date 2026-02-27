@@ -57,23 +57,44 @@ func checkHandshake(target string, client *http.Client, onFound func(core.Findin
 
 	// 101 Switching Protocols means the handshake was successful
 	if resp.StatusCode == 101 {
-		fmt.Printf("[!] POSITIVE MATCH: CSWSH Vulnerability at %s\n", target)
+		fmt.Printf("[!] POSITIVE MATCH: CSWSH signal at %s\n", target)
+		severity := "Info"
+		detail := "Server accepted cross-origin WebSocket handshake (Origin=http://evil-bhyakugan.com). This is policy misconfiguration signal only; no authenticated action, cookie replay, or CSRF-over-WebSocket proof was observed."
+		if hasSessionLikeCookie(resp.Header.Values("Set-Cookie")) {
+			severity = "Low"
+			detail += " Session-like cookie observed in handshake response, but session-auth-confirmed is not proven."
+		}
 		onFound(core.Finding{
-			Type:     "Cross-Site WebSocket Hijacking",
-			Target:   target,
-			Detail:   "Server accepted WebSocket handshake from an unauthorized Origin (http://evil-bhyakugan.com).",
-			Severity: "High",
+			Type:       "Cross-Site WebSocket Hijacking",
+			Target:     target,
+			Detail:     detail,
+			Severity:   severity,
+			Confidence: "probable",
 		})
 	} else if resp.StatusCode == 400 || resp.StatusCode == 426 {
 		// 426 Upgrade Required or 400 might still indicate a WS endpoint exists
 		// but our raw handshake was missing something.
 		if strings.Contains(strings.ToLower(resp.Header.Get("Upgrade")), "websocket") {
 			onFound(core.Finding{
-				Type:     "WebSocket Endpoint",
-				Target:   target,
-				Detail:   "Potential WebSocket endpoint discovered.",
-				Severity: "Info",
+				Type:       "WebSocket Endpoint",
+				Target:     target,
+				Detail:     "Potential WebSocket endpoint discovered.",
+				Severity:   "Info",
+				Confidence: "probable",
 			})
 		}
 	}
+}
+
+func hasSessionLikeCookie(cookies []string) bool {
+	for _, c := range cookies {
+		cl := strings.ToLower(c)
+		if strings.Contains(cl, "session") ||
+			strings.Contains(cl, "auth") ||
+			strings.Contains(cl, "token") ||
+			strings.Contains(cl, "jwt") {
+			return true
+		}
+	}
+	return false
 }

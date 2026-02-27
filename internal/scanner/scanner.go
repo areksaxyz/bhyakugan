@@ -37,14 +37,15 @@ import (
 )
 
 type Options struct {
-	Target       string
-	Timeout      int
-	PayloadFile  string
-	Depth        int
-	SharedJS     *sync.Map
-	Mode         string
-	Fast         bool
-	MaxEndpoints int
+	Target           string
+	Timeout          int
+	PayloadFile      string
+	Depth            int
+	SharedJS         *sync.Map
+	Mode             string
+	StrictValidation bool
+	Fast             bool
+	MaxEndpoints     int
 }
 
 func profileTarget(urlStr string, client *http.Client) core.ScanContext {
@@ -102,20 +103,19 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 }
 
 func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
-	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
-	if mode == "" {
-		mode = "strict"
-	}
-	if mode != "strict" && mode != "balanced" && mode != "aggressive" {
-		mode = "strict"
-	}
+	mode := normalizeMode(opts.Mode)
+	deduper := newFindingDeduper()
 
 	reportFinding := func(f core.Finding) {
-		f.Confidence = classifyConfidence(f)
-		if !shouldReportFinding(mode, f) {
+		f = EnrichFindingForReporting(f)
+		processed, ok := EvaluateFindingWithOptions(mode, opts.StrictValidation, f)
+		if !ok {
 			return
 		}
-		onFound(f)
+		if !deduper.ShouldEmit(processed) {
+			return
+		}
+		onFound(processed)
 	}
 
 	scanConcurrency := 30
@@ -136,7 +136,8 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 
 	ctx := profileTarget(opts.Target, client)
 	if ctx.Baseline == -1 {
-		fmt.Printf("[-] Failed to establish baseline for %s after retries. Skipping.\n", opts.Target)
+		fmt.Printf("[-] Failed to establish baseline for %s after retries. Running limited directory checks.\n", opts.Target)
+		directories.Scan(opts.Target, client, reportFinding)
 		return
 	}
 	fmt.Printf("[*] Profile: %s | Lang=%s | WAF=%s\n", opts.Target, ctx.Language, ctx.WAF)
@@ -278,17 +279,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						defer crawlWg.Done()
 
 						if current.Depth > 0 {
-							lowerURL := strings.ToLower(current.URL)
-							isStatic := false
-							staticExts := []string{".jpg", ".jpeg", ".png", ".gif", ".svg", ".css", ".pdf", ".woff", ".woff2", ".ttf"}
-							for _, ext := range staticExts {
-								if strings.HasSuffix(lowerURL, ext) {
-									isStatic = true
-									break
-								}
-							}
-
-							if !isStatic {
+							if !isLikelyStaticAssetURL(current.URL) {
 								scanWg.Add(1)
 								go func(l string) {
 									defer scanWg.Done()
@@ -430,8 +421,11 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 }
 
 func classifyConfidence(f core.Finding) string {
+	quality, explicitQuality := deriveEvidenceQuality(f)
+	baseConfidence := "probable"
 	if strings.TrimSpace(f.Confidence) != "" {
-		return strings.ToLower(strings.TrimSpace(f.Confidence))
+		baseConfidence = strings.ToLower(strings.TrimSpace(f.Confidence))
+		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 	d := strings.ToLower(f.Detail)
 	t := strings.ToLower(f.Type)
@@ -441,7 +435,8 @@ func classifyConfidence(f core.Finding) string {
 		strings.Contains(d, "invalid") ||
 		strings.Contains(d, "potential ") ||
 		strings.Contains(d, "no confirmed exploitation") {
-		return "noisy"
+		baseConfidence = "noisy"
+		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 
 	if strings.Contains(d, "confirmed") ||
@@ -450,33 +445,486 @@ func classifyConfidence(f core.Finding) string {
 		strings.Contains(d, "system file read") ||
 		strings.Contains(d, "source disclosure") ||
 		strings.Contains(d, "introspection query enabled") {
-		return "confirmed"
+		baseConfidence = "confirmed"
+		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 
 	if strings.Contains(t, "path discovered") ||
 		strings.Contains(t, "recon") ||
 		strings.Contains(t, "jwt discovered") {
+		baseConfidence = "probable"
+		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
+	}
+
+	return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
+}
+
+func normalizeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "strict"
+	}
+	if mode == "bounty" {
+		return "strict"
+	}
+	if mode == "lab" {
+		return "aggressive"
+	}
+	if mode != "strict" && mode != "balanced" && mode != "aggressive" {
+		return "strict"
+	}
+	return mode
+}
+
+// EvaluateFinding normalizes confidence and applies mode filtering.
+func EvaluateFinding(mode string, f core.Finding) (core.Finding, bool) {
+	return EvaluateFindingWithOptions(mode, false, f)
+}
+
+// EvaluateFindingWithOptions normalizes confidence and applies mode + validation filtering.
+func EvaluateFindingWithOptions(mode string, strictValidation bool, f core.Finding) (core.Finding, bool) {
+	mode = normalizeMode(mode)
+	f.Confidence = classifyConfidence(f)
+	f.Severity = normalizeSeverity(f)
+	if !shouldReportFinding(mode, strictValidation, f) {
+		return f, false
+	}
+	return f, true
+}
+
+func normalizeSeverity(f core.Finding) string {
+	sev := normalizeSeverityLabel(f.Severity)
+	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
+	t := strings.ToLower(strings.TrimSpace(f.Type))
+	quality, explicitQuality := deriveEvidenceQuality(f)
+
+	// Confidence-aware downgrade to reduce inflated "critical" labels.
+	if conf == "noisy" {
+		switch sev {
+		case "Critical":
+			sev = "Medium"
+		case "High":
+			sev = "Low"
+		}
+	}
+	if conf == "probable" && sev == "Critical" {
+		sev = "High"
+	}
+	if conf != "confirmed" {
+		if t == "vulnerability" || strings.Contains(t, "custom vulnerability") {
+			if sev == "Critical" {
+				sev = "High"
+			} else if sev == "High" {
+				sev = "Medium"
+			}
+		}
+	}
+
+	// Type-specific caps when impact chain is not explicitly confirmed.
+	if conf != "confirmed" {
+		if strings.Contains(t, "saml vulnerability") && sev == "Critical" {
+			sev = "High"
+		}
+		if strings.Contains(t, "prototype pollution") && sev == "Critical" {
+			sev = "High"
+		}
+		if strings.Contains(t, "server-side template injection") && sev == "Critical" {
+			sev = "High"
+		}
+	}
+
+	sev = applyEvidenceSeverityCaps(f, sev, conf, quality, explicitQuality)
+	return normalizeSeverityLabel(sev)
+}
+
+func syncConfidenceWithEvidence(confidence string, quality evidenceQuality, explicitQuality bool) string {
+	conf := strings.ToLower(strings.TrimSpace(confidence))
+	if conf == "" {
+		conf = "probable"
+	}
+
+	// Noise suppression rule: weak heuristic-only evidence cannot be medium/high confidence.
+	if explicitQuality && quality.Score < 40 && !quality.Deterministic && !quality.ControlValidated {
+		return "noisy"
+	}
+
+	if explicitQuality && quality.Tier == "tier1" && quality.Score >= 80 && conf != "confirmed" {
+		return "confirmed"
+	}
+
+	if explicitQuality && quality.FPRisk == "very-high" && conf == "confirmed" && quality.Score < 80 {
 		return "probable"
 	}
 
-	return "probable"
+	if explicitQuality && quality.Score < 70 && conf == "confirmed" {
+		return "probable"
+	}
+
+	return conf
 }
 
-func shouldReportFinding(mode string, f core.Finding) bool {
+func applyEvidenceSeverityCaps(f core.Finding, sev, confidence string, quality evidenceQuality, explicitQuality bool) string {
+	normalized := normalizeSeverityLabel(sev)
+	conf := strings.ToLower(strings.TrimSpace(confidence))
+	deterministicExploitProof := hasDeterministicExploitProof(f, quality)
+	fType := strings.ToLower(strings.TrimSpace(f.Type))
+	detail := strings.ToLower(strings.TrimSpace(f.Detail))
+
+	if !explicitQuality {
+		normalized = applyProofDepthSeverityCaps(fType, detail, normalized)
+		if deterministicExploitProof && severityRank(normalized) < severityRank("High") {
+			return "High"
+		}
+		return normalizeSeverityLabel(normalized)
+	}
+
+	// Hard suppression for low-quality heuristic-only signals.
+	if quality.Score < 40 && !quality.Deterministic && !quality.ControlValidated {
+		return "Info"
+	}
+
+	// Class-specific hardening for historically noisy classes.
+	normalized = applyProofDepthSeverityCaps(fType, detail, normalized)
+	depth := exploitDepthForSeverity(f)
+	normalized = applyExploitDepthCaps(depth, normalized)
+
+	// Deterministic exploit proofs must not stay in low/medium buckets.
+	if deterministicExploitProof && severityRank(normalized) < severityRank("High") {
+		normalized = "High"
+	}
+
+	// Severity-confidence synchronization guardrails.
+	if normalized == "Critical" {
+		if conf != "confirmed" || quality.Score < 85 || quality.Tier != "tier1" || !quality.Deterministic || !quality.ControlValidated {
+			normalized = "High"
+		}
+	}
+	if normalized == "High" {
+		if quality.Score < 75 || quality.Tier == "tier3" || !quality.Deterministic || !quality.ControlValidated {
+			normalized = "Medium"
+		}
+	}
+
+	// Severity must follow evidence tiers.
+	switch quality.Tier {
+	case "tier3":
+		switch normalized {
+		case "Critical":
+			normalized = "Medium"
+		case "High":
+			normalized = "Low"
+		case "Medium":
+			normalized = "Low"
+		}
+	case "tier2":
+		if normalized == "Critical" {
+			normalized = "High"
+		}
+	}
+
+	// FP risk caps.
+	if !deterministicExploitProof {
+		switch quality.FPRisk {
+		case "very-high":
+			switch normalized {
+			case "Critical", "High", "Medium":
+				normalized = "Low"
+			}
+		case "high":
+			if normalized == "Critical" {
+				normalized = "Medium"
+			}
+		}
+	}
+
+	// Score-based caps.
+	if quality.Score < 70 && normalized == "Critical" {
+		normalized = "High"
+	}
+	if quality.Score < 55 {
+		if normalized == "High" {
+			normalized = "Medium"
+		}
+		if normalized == "Medium" && conf == "noisy" {
+			normalized = "Low"
+		}
+	}
+
+	if conf == "noisy" && (normalized == "Critical" || normalized == "High") {
+		normalized = "Low"
+	}
+	if deterministicExploitProof && severityRank(normalized) < severityRank("High") {
+		normalized = "High"
+	}
+	return normalizeSeverityLabel(normalized)
+}
+
+func exploitDepthForSeverity(f core.Finding) int {
+	if depth, ok := ExtractExploitDepth(f.Detail); ok {
+		return depth
+	}
+	fType := strings.ToLower(strings.TrimSpace(f.Type))
+	detail := strings.ToLower(strings.TrimSpace(f.Detail))
+	switch {
+	case strings.Contains(fType, "remote code execution"),
+		strings.Contains(detail, "rce confirmed"),
+		strings.Contains(detail, "uid=0("):
+		return 5
+	case strings.Contains(fType, "improper trust in http headers") && strings.Contains(detail, "confirmed bypass: yes"):
+		return 4
+	case strings.Contains(detail, "root:x:0:0:"),
+		strings.Contains(detail, "app_key"),
+		strings.Contains(detail, "security-credentials"):
+		return 4
+	case strings.Contains(detail, "boolean true/false differential confirmed"),
+		strings.Contains(detail, "count() differential confirmed"),
+		strings.Contains(detail, "payload a (true)") && strings.Contains(detail, "payload b (false)"):
+		return 3
+	case strings.Contains(detail, "behavioral indicator changed"),
+		strings.Contains(detail, "heuristic only"),
+		strings.Contains(detail, "signal only"):
+		return 1
+	case strings.Contains(detail, "error-based sql signal"),
+		strings.Contains(detail, "time-based sqli signal"),
+		strings.Contains(detail, "xpath error found"):
+		return 2
+	default:
+		return 2
+	}
+}
+
+func applyExploitDepthCaps(depth int, current string) string {
+	normalized := normalizeSeverityLabel(current)
+	switch {
+	case depth <= 1:
+		if severityRank(normalized) > severityRank("Low") {
+			return "Low"
+		}
+	case depth == 2:
+		if severityRank(normalized) > severityRank("Medium") {
+			return "Medium"
+		}
+	case depth == 3:
+		if severityRank(normalized) > severityRank("High") {
+			return "High"
+		}
+	}
+	return normalized
+}
+
+func applyProofDepthSeverityCaps(fType, detail, current string) string {
+	normalized := normalizeSeverityLabel(current)
+
+	// XPath heuristic signals must not escalate.
+	if strings.Contains(fType, "xpath injection") {
+		if isXPathHeuristicOnly(detail) {
+			return "Info"
+		}
+		// Error-only deterministic proof is still not equivalent to exploit chain.
+		if isXPathErrorOnly(detail) && severityRank(normalized) > severityRank("Medium") {
+			return "Medium"
+		}
+	}
+
+	// Error-only SQLi is a signal, not full exploit chain.
+	if (strings.Contains(fType, "sql injection") || strings.Contains(fType, "oracle sqli")) &&
+		isSQLErrorOnly(detail) && severityRank(normalized) > severityRank("Medium") {
+		return "Medium"
+	}
+
+	// SSRF metadata-only fingerprints remain informational without external callback proof.
+	if strings.Contains(fType, "ssrf injection") &&
+		(strings.Contains(detail, "metadata fingerprint observed") || strings.Contains(detail, "external_callback_validation=false")) {
+		if severityRank(normalized) > severityRank("Medium") {
+			return "Medium"
+		}
+		return normalized
+	}
+
+	return normalized
+}
+
+func isXPathHeuristicOnly(detail string) bool {
+	if strings.Contains(detail, "behavioral indicator changed") || strings.Contains(detail, "heuristic only") {
+		if strings.Contains(detail, "boolean true/false differential confirmed") ||
+			strings.Contains(detail, "count() differential confirmed") ||
+			strings.Contains(detail, "structural xml leak detected") ||
+			strings.Contains(detail, "xpath error found") {
+			return false
+		}
+		return true
+	}
+	return strings.Contains(detail, "validation status: informational signal only")
+}
+
+func isXPathErrorOnly(detail string) bool {
+	if !strings.Contains(detail, "xpath error found") {
+		return false
+	}
+	return !strings.Contains(detail, "boolean true/false differential confirmed") &&
+		!strings.Contains(detail, "count() differential confirmed") &&
+		!strings.Contains(detail, "structural xml leak detected")
+}
+
+func isSQLErrorOnly(detail string) bool {
+	errorMarkers := []string{
+		"found mysql error",
+		"found postgresql error",
+		"found mssql error",
+		"found oracle error",
+		"error-based sql",
+	}
+	hasError := false
+	for _, m := range errorMarkers {
+		if strings.Contains(detail, m) {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		return false
+	}
+
+	strongProofMarkers := []string{
+		"payload a (true)",
+		"payload b (false)",
+		"boolean-based sql injection confirmed",
+		"time-based sqli signal",
+		"union select",
+		"exfiltration",
+		"data extraction",
+		"dumped",
+	}
+	for _, m := range strongProofMarkers {
+		if strings.Contains(detail, m) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDeterministicExploitProof(f core.Finding, quality evidenceQuality) bool {
+	if !quality.Deterministic || !quality.ControlValidated {
+		return false
+	}
+	fType := strings.ToLower(strings.TrimSpace(f.Type))
+	detail := strings.ToLower(strings.TrimSpace(f.Detail))
+
+	oracleBooleanProof := (strings.Contains(fType, "oracle sqli") || strings.Contains(fType, "sql injection")) &&
+		strings.Contains(detail, "payload a (true)") &&
+		strings.Contains(detail, "payload b (false)") &&
+		(strings.Contains(detail, "oracle") || strings.Contains(detail, "ora-")) &&
+		(strings.Contains(detail, "boolean-based sql injection confirmed") || (strings.Contains(detail, "http 200") && strings.Contains(detail, "http 500")))
+
+	headerTrustBypassProof := strings.Contains(fType, "improper trust in http headers") &&
+		strings.Contains(detail, "confirmed bypass: yes") &&
+		(strings.Contains(detail, "sensitive-content") ||
+			strings.Contains(detail, "admin") ||
+			strings.Contains(detail, "config") ||
+			strings.Contains(detail, "root"))
+
+	return oracleBooleanProof || headerTrustBypassProof
+}
+
+func severityRank(sev string) int {
+	switch normalizeSeverityLabel(sev) {
+	case "Critical":
+		return 5
+	case "High":
+		return 4
+	case "Medium":
+		return 3
+	case "Low":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func normalizeSeverityLabel(sev string) string {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical":
+		return "Critical"
+	case "high":
+		return "High"
+	case "medium":
+		return "Medium"
+	case "low":
+		return "Low"
+	default:
+		return "Info"
+	}
+}
+
+func shouldReportFinding(mode string, strictValidation bool, f core.Finding) bool {
+	if strictValidation && !passesStrictValidation(f) {
+		return false
+	}
+	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
 	switch mode {
 	case "aggressive":
 		return true
 	case "balanced":
-		return f.Confidence != "noisy"
+		return conf != "noisy"
 	default: // strict
-		if f.Confidence == "noisy" {
+		// In strict mode, only keep high-impact findings that are explicitly confirmed.
+		if conf != "confirmed" {
 			return false
-		}
-		// Keep strict focused on higher-confidence bug bounty outputs.
-		if f.Confidence == "confirmed" {
-			return true
 		}
 		sev := strings.ToLower(f.Severity)
 		return sev == "critical" || sev == "high"
 	}
+}
+
+func isLikelyStaticAssetURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	lowerPath := strings.ToLower(strings.TrimSpace(u.Path))
+	if lowerPath == "" {
+		return false
+	}
+	staticExts := []string{
+		".jpg", ".jpeg", ".png", ".gif", ".svg", ".css", ".pdf",
+		".woff", ".woff2", ".ttf", ".eot", ".ico", ".js", ".mjs", ".map",
+		".webp", ".mp4", ".webm", ".mp3", ".wav",
+	}
+	for _, ext := range staticExts {
+		if strings.HasSuffix(lowerPath, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func passesStrictValidation(f core.Finding) bool {
+	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
+	if conf != "confirmed" {
+		return false
+	}
+
+	detail := strings.ToLower(strings.TrimSpace(f.Detail))
+	fType := strings.ToLower(strings.TrimSpace(f.Type))
+	weakSignals := []string{
+		"heuristic",
+		"probable",
+		"no proof",
+		"no confirmed exploitation",
+		"potential ",
+	}
+	for _, marker := range weakSignals {
+		if strings.Contains(detail, marker) {
+			return false
+		}
+	}
+
+	// Extra-proof requirements for classes that are frequently over-reported.
+	if strings.Contains(fType, "saml vulnerability") {
+		return strings.Contains(detail, "control-test:passed")
+	}
+	if strings.Contains(fType, "cross-site websocket hijacking") {
+		return strings.Contains(detail, "session-auth-confirmed")
+	}
+	return true
 }

@@ -144,6 +144,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				bodyLen := len(bodyStr)
 				contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 				bodyLower := strings.ToLower(bodyStr)
+				pathLower := strings.ToLower(check.Path)
 
 				isHTML := strings.Contains(bodyLower, "<html") || strings.Contains(bodyLower, "<!doctype")
 				hasSecret := hasStrongSecretEvidence(bodyLower)
@@ -194,6 +195,14 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					}
 				}
 
+				// Rule E: config.php must contain strong PHP/config source markers.
+				if strings.HasSuffix(pathLower, "config.php") &&
+					!isLikelyPHPConfigSource(bodyStr, contentType, isHTML) &&
+					!hasStrongSecretEvidence(bodyLower) &&
+					!hasConfigAssignments(bodyStr) {
+					return
+				}
+
 				found := false
 				if strings.Contains(check.Path, "%00") {
 					found = true
@@ -216,8 +225,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					detail := fmt.Sprintf("Accessible Path (200 OK, Len: %d)", bodyLen)
 
 					// 1. Path-based classification (conservative)
-					pathLower := strings.ToLower(check.Path)
-					if strings.Contains(pathLower, ".htaccess") || strings.Contains(pathLower, "web.config") || strings.Contains(pathLower, "config.php") || strings.Contains(pathLower, ".bak") {
+					if strings.Contains(pathLower, ".htaccess") || strings.Contains(pathLower, "web.config") || strings.Contains(pathLower, ".bak") {
 						severity = "High"
 						findingType = "Sensitive Config/Backup Exposed"
 					} else if strings.Contains(pathLower, "logs") || strings.Contains(pathLower, ".log") {
@@ -260,6 +268,12 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 						severity = "High"
 						confidence = "confirmed"
 						detail = ".htaccess content is directly readable and contains valid Apache directives."
+					}
+					if strings.HasSuffix(pathLower, "config.php") && isLikelyPHPConfigSource(bodyStr, contentType, isHTML) {
+						findingType = "Sensitive Config/Backup Exposed"
+						severity = "High"
+						confidence = "confirmed"
+						detail = "config.php appears directly readable with raw PHP configuration/source markers."
 					}
 
 					if strings.Contains(check.Path, "%00") {
@@ -311,6 +325,32 @@ func hasConfigAssignments(body string) bool {
 		strings.Contains(lower, "database_url") ||
 		strings.Contains(lower, "api_key=") ||
 		strings.Contains(lower, "secret_key")
+}
+
+func isLikelyPHPConfigSource(body, contentType string, isHTML bool) bool {
+	if isHTML || strings.Contains(contentType, "text/html") {
+		return false
+	}
+	lower := strings.ToLower(body)
+	markers := []string{
+		"<?php",
+		"define(",
+		"$db",
+		"$config",
+		"mysqli",
+		"pdo",
+		"db_host",
+		"db_user",
+		"db_password",
+		"return [",
+	}
+	count := 0
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			count++
+		}
+	}
+	return count >= 2
 }
 
 func isLikelySQLDump(body string) bool {

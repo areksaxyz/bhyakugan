@@ -46,7 +46,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) {
 	// Step 1: TCP Connection & HTTP Request
 	resp, err := client.Get(url)
-	
+
 	// Rule 1: Connection Refused = Silent Discard
 	errType := utils.ClassifyError(err)
 	if errType == "refused" {
@@ -70,7 +70,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 	// 2. Content-Type Check
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	validContentType := strings.Contains(contentType, "application/json") || strings.Contains(contentType, "application/graphql")
-	
+
 	if !validContentType {
 		// Exception: GraphiQL HTML interfaces
 		body, _ := io.ReadAll(resp.Body)
@@ -79,10 +79,11 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 			// Valid GraphiQL Interface
 			fmt.Printf("[+] FOUND GraphiQL Interface: %s\n", url)
 			onFound(core.Finding{
-				Type:     "GraphQL Interface",
-				Target:   url,
-				Detail:   "GraphiQL or Playground UI detected.",
-				Severity: "Info",
+				Type:       "GraphQL Interface",
+				Target:     url,
+				Detail:     "GraphiQL or Playground UI detected.",
+				Severity:   "Info",
+				Confidence: "probable",
 			})
 			// Probe Introspection/Batching even if it's UI
 			checkIntrospection(url, client, onFound)
@@ -96,9 +97,9 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 
 	// 3. Body Indicators (Strict)
 	// Must contain one of: "errors", "data", "introspection", "Cannot query field", "syntax error"
-	// BUT "errors" is too generic for JSON APIs. 
+	// BUT "errors" is too generic for JSON APIs.
 	// GraphQL errors usually look like: {"errors":[{"message":...}]}
-	
+
 	isGraphQL := false
 	if strings.Contains(bodyStr, `{"data":`) {
 		isGraphQL = true
@@ -111,10 +112,11 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 	if isGraphQL {
 		fmt.Printf("[+] FOUND Valid GraphQL Endpoint: %s\n", url)
 		onFound(core.Finding{
-			Type:     "GraphQL Endpoint",
-			Target:   url,
-			Detail:   "Valid GraphQL endpoint confirmed (JSON response with GraphQL structure).",
-			Severity: "Info",
+			Type:       "GraphQL Endpoint",
+			Target:     url,
+			Detail:     "Valid GraphQL endpoint confirmed (JSON response with GraphQL structure).",
+			Severity:   "Info",
+			Confidence: "confirmed",
 		})
 		checkIntrospection(url, client, onFound)
 		checkBatching(url, client, onFound)
@@ -124,7 +126,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 func checkIntrospection(url string, client *http.Client, onFound func(core.Finding)) {
 	// Basic Introspection Query
 	query := `{"query": "query IntrospectionQuery { __schema { queryType { name } } }"}`
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(query)))
 	if err != nil {
 		return
@@ -132,7 +134,7 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
-	
+
 	// Rule 1: Connection Refused = Silent Discard
 	errType := utils.ClassifyError(err)
 	if errType == "refused" {
@@ -142,17 +144,18 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
 
 	if strings.Contains(bodyStr, "__schema") && strings.Contains(bodyStr, "queryType") {
 		fmt.Printf("[!] POSITIVE MATCH: GraphQL Introspection Enabled at %s\n", url)
 		onFound(core.Finding{
-			Type:     "GraphQL Introspection",
-			Target:   url,
-			Detail:   "Introspection Query Enabled (Schema Dump Possible)",
-			Severity: "Medium", 
+			Type:       "GraphQL Introspection",
+			Target:     url,
+			Detail:     "Introspection is enabled. This is configuration exposure only; no auth bypass or data exposure proof was observed.",
+			Severity:   "Info",
+			Confidence: "probable",
 		})
 	}
 }
@@ -160,7 +163,7 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 func checkBatching(url string, client *http.Client, onFound func(core.Finding)) {
 	// Array Batching Attack Check
 	query := `[{"query": "query { __typename }"}, {"query": "query { __typename }"}]`
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(query)))
 	if err != nil {
 		return
@@ -168,7 +171,7 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
-	
+
 	// Rule 1: Connection Refused = Silent Discard
 	errType := utils.ClassifyError(err)
 	if errType == "refused" {
@@ -178,7 +181,7 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
 
@@ -186,10 +189,11 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 	if strings.HasPrefix(strings.TrimSpace(bodyStr), "[") && strings.Contains(bodyStr, "__typename") {
 		fmt.Printf("[!] POSITIVE MATCH: GraphQL Batching Enabled at %s\n", url)
 		onFound(core.Finding{
-			Type:     "GraphQL Batching",
-			Target:   url,
-			Detail:   "Batching Enabled (Potential Brute Force / DoS Amplification)",
-			Severity: "Low",
+			Type:       "GraphQL Batching",
+			Target:     url,
+			Detail:     "Batching enabled (may amplify brute-force or DoS attempts; exploit chain not validated).",
+			Severity:   "Low",
+			Confidence: "probable",
 		})
 	}
 }

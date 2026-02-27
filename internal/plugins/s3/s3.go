@@ -89,19 +89,15 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 			if strings.Contains(strings.ToLower(bodyStr), strings.ToLower(targetBrand)) {
 				fmt.Printf("[!] POSITIVE MATCH: Public S3 Bucket (Verified Owner): %s\n", url)
 				onFound(core.Finding{
-					Type:     "S3 Bucket",
-					Target:   url,
-					Detail:   "Public Listable Bucket - Matches target brand keywords.",
-					Severity: "High",
+					Type:       "S3 Bucket",
+					Target:     url,
+					Detail:     "Public listable bucket confirmed and ownership signal matches target brand.",
+					Severity:   "High",
+					Confidence: "confirmed",
 				})
 			} else {
-				fmt.Printf("[?] INFO: Public S3 Bucket (Ownership Unclear): %s\n", url)
-				onFound(core.Finding{
-					Type:     "S3 Bucket",
-					Target:   url,
-					Detail:   "Public Listable Bucket - Ownership verification recommended.",
-					Severity: "Medium",
-				})
+				// Ownership unclear => drop to avoid false-positive reporting.
+				fmt.Printf("[*] Skipping S3 bucket with unclear ownership: %s\n", url)
 			}
 		}
 	}

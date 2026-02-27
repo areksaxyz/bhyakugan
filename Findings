@@ -1,0 +1,7 @@
+internal/output/html.go:262:        .bg-Critical { background: var(--critical); }
+internal/output/html.go:291:                <p>Unique Exploitable: <strong>%d</strong></p>
+internal/output/html.go:296:            <div class="card critical"><h3>%d</h3><p>Critical</p></div>
+internal/output/html.go:297:            <div class="card high"><h3>%d</h3><p>High</p></div>
+internal/output/html.go:298:            <div class="card medium"><h3>%d</h3><p>Medium</p></div>
+internal/output/html.go:299:            <div class="card low"><h3>%d</h3><p>Low</p></div>
+internal/output/html.go:300:            <div class="card info"><h3>%d</h3><p>Info</p></div>

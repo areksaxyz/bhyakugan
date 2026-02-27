@@ -2,11 +2,14 @@ package output
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/yupiyy/bhyakugan/internal/scanner"
 )
 
 func cleanEndpoint(urlStr string) string {
@@ -70,6 +73,15 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 
 	// Consolidate Findings for Display
 	findings := consolidateFindings(rawFindings)
+	vulnFindings := make([]core.Finding, 0, len(findings))
+	observations := make([]core.Finding, 0, len(findings))
+	for _, fnd := range findings {
+		if isReconObservation(fnd) {
+			observations = append(observations, fnd)
+			continue
+		}
+		vulnFindings = append(vulnFindings, fnd)
+	}
 
 	// Group findings by Severity
 	grouped := make(map[string][]core.Finding)
@@ -82,7 +94,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 		grouped[sev] = []core.Finding{}
 	}
 
-	for _, fnd := range findings {
+	for _, fnd := range vulnFindings {
 		if _, ok := grouped[fnd.Severity]; !ok {
 			grouped["Info"] = append(grouped["Info"], fnd)
 			stats["Info"]++
@@ -91,6 +103,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 			stats[fnd.Severity]++
 		}
 	}
+	uniqueExploitable := countUniqueExploitable(rawFindings)
 
 	// CSS & Header (Same as before)
 	htmlHead := fmt.Sprintf(`<!DOCTYPE html>
@@ -252,9 +265,10 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
         
-        .col-type { width: 20%%; font-weight: 700; color: var(--primary); }
-        .col-target { width: 35%%; word-break: break-all; }
-        .col-detail { width: 45%%; color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; }
+	        .col-type { width: 18%%; font-weight: 700; color: var(--primary); }
+	        .col-target { width: 30%%; word-break: break-all; }
+	        .col-score { width: 10%%; font-weight: 700; }
+	        .col-detail { width: 42%%; color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; }
         .col-detail code { background: #0f172a; padding: 2px 4px; border-radius: 4px; color: #38bdf8; font-family: monospace; }
         
         .bg-Critical { background: var(--critical); }
@@ -286,6 +300,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
                 <p>Target: <a href="%s" target="_blank">%s</a></p>
                 <p>Date: <strong>%s</strong></p>
                 <p>Live Hosts: <strong>%d</strong></p>
+                <p>Unique Exploitable: <strong>%d</strong></p>
             </div>
         </div>
 
@@ -296,7 +311,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
             <div class="card low"><h3>%d</h3><p>Low</p></div>
             <div class="card info"><h3>%d</h3><p>Info</p></div>
         </div>
-`, target, target, target, time.Now().Format("Jan 02, 2006 15:04:05 MST"), len(liveHosts), stats["Critical"], stats["High"], stats["Medium"], stats["Low"], stats["Info"])
+`, target, target, target, time.Now().Format("Jan 02, 2006 15:04:05 MST"), len(liveHosts), uniqueExploitable, stats["Critical"], stats["High"], stats["Medium"], stats["Low"], stats["Info"])
 
 	if _, err := f.WriteString(htmlHead); err != nil {
 		return err
@@ -328,8 +343,8 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
         </div>
         <div class="table-container">
             <table>
-                <thead><tr><th class="col-type">Vulnerability Type</th><th class="col-target">Target Endpoint</th><th>Confidence</th><th class="col-detail">Evidence / Details</th></tr></thead>
-                <tbody>`, sev, sev, len(items))
+	                <thead><tr><th class="col-type">Vulnerability Type</th><th class="col-target">Target Endpoint</th><th>Confidence</th><th class="col-score">Exploitability</th><th class="col-detail">Evidence / Details</th></tr></thead>
+	                <tbody>`, sev, sev, len(items))
 
 		if _, err := f.WriteString(sectionHeader); err != nil {
 			return err
@@ -348,13 +363,56 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 				targetCell = fmt.Sprintf(`<a href="%s" target="_blank">%s</a>`, fnd.Target, displayTarget)
 			}
 
+			score := exploitabilityScore(fnd)
+			row := fmt.Sprintf(`
+	            <tr>
+	                <td class="col-type">%s</td>
+	                <td class="col-target">%s</td>
+	                <td>%s</td>
+	                <td class="col-score">%d/100</td>
+	                <td class="col-detail">%s</td>
+	            </tr>`, fnd.Type, targetCell, strings.ToUpper(defaultConfidence(fnd.Confidence)), score, fnd.Detail)
+			if _, err := f.WriteString(row); err != nil {
+				return err
+			}
+		}
+
+		if _, err := f.WriteString("</tbody></table></div>"); err != nil {
+			return err
+		}
+	}
+
+	if len(observations) > 0 {
+		sectionHeader := fmt.Sprintf(`
+        <div class="section-title">
+            <span class="section-badge bg-Info">Recon</span> Observations (%d)
+        </div>
+        <div class="table-container">
+            <table>
+                <thead><tr><th class="col-type">Signal Type</th><th class="col-target">Target Endpoint</th><th>Confidence</th><th class="col-detail">Details</th></tr></thead>
+                <tbody>`, len(observations))
+		if _, err := f.WriteString(sectionHeader); err != nil {
+			return err
+		}
+
+		for _, obs := range observations {
+			displayTarget := cleanEndpoint(obs.Target)
+			if strings.Contains(obs.Target, "Endpoints Detected") {
+				displayTarget = obs.Target
+			}
+			targetCell := displayTarget
+			targetLower := strings.ToLower(strings.TrimSpace(obs.Target))
+			if strings.HasPrefix(targetLower, "http://") || strings.HasPrefix(targetLower, "https://") {
+				targetCell = fmt.Sprintf(`<a href="%s" target="_blank">%s</a>`, obs.Target, displayTarget)
+			}
+
 			row := fmt.Sprintf(`
             <tr>
                 <td class="col-type">%s</td>
                 <td class="col-target">%s</td>
                 <td>%s</td>
                 <td class="col-detail">%s</td>
-            </tr>`, fnd.Type, targetCell, strings.ToUpper(defaultConfidence(fnd.Confidence)), fnd.Detail)
+            </tr>`, obs.Type, targetCell, strings.ToUpper(defaultConfidence(obs.Confidence)), obs.Detail)
 			if _, err := f.WriteString(row); err != nil {
 				return err
 			}
@@ -402,27 +460,109 @@ func defaultConfidence(c string) string {
 	return c
 }
 
+func isReconObservation(f core.Finding) bool {
+	sev := normalizeSeverityLabel(f.Severity)
+	if sev == "Critical" || sev == "High" {
+		return false
+	}
+
+	lowerType := strings.ToLower(strings.TrimSpace(f.Type))
+	lowerDetail := strings.ToLower(strings.TrimSpace(f.Detail))
+
+	if strings.Contains(lowerDetail, "tier=tier3") {
+		return true
+	}
+	if isExplicitReconType(lowerType) {
+		return true
+	}
+
+	conf := strings.ToLower(defaultConfidence(f.Confidence))
+	if (sev == "Info" || sev == "Low") && conf == "noisy" {
+		if !strings.Contains(lowerDetail, "deterministic=true") || !strings.Contains(lowerDetail, "control_validation=true") {
+			return true
+		}
+	}
+
+	return strings.Contains(lowerDetail, "informational signal only") ||
+		strings.Contains(lowerDetail, "no exploitation confirmed") ||
+		strings.Contains(lowerDetail, "configuration exposure only") ||
+		strings.Contains(lowerDetail, "policy misconfiguration signal only")
+}
+
+func isExplicitReconType(t string) bool {
+	if strings.HasPrefix(t, "recon:") {
+		return true
+	}
+
+	reconMarkers := []string{
+		"path discovered",
+		"auth-gated endpoint",
+		"websocket endpoint",
+		"graphql endpoint",
+		"graphql interface",
+		"graphql endpoints detected",
+		"graphql introspection",
+		"graphql batching",
+		"graphql schema discovery exposure",
+		"jwt discovered",
+		"jwt header info",
+		"jwt sensitive info",
+		"saml endpoints detected",
+		"mobile-specific endpoint",
+	}
+	for _, marker := range reconMarkers {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func consolidateFindings(findings []core.Finding) []core.Finding {
 	var consolidated []core.Finding
 
 	// Map to group findings
 	// Key format varies by severity to support different consolidation strategies
 	grouped := make(map[string][]core.Finding)
+	rootCauseSignatureCounts := make(map[string]int)
 
+	normalized := make([]core.Finding, 0, len(findings))
 	for _, f := range findings {
-		// --- LABEL REFINEMENT ---
 		fType := f.Type
 		if fType == "Hidden Directory" || fType == "Protected Directory" {
 			fType = "Accessible Path"
 		}
+		if fType == "GraphQL Endpoint" || fType == "GraphQL Interface" {
+			fType = "GraphQL Endpoint Discovery"
+		}
+		if fType == "Database Dump Exposed" || fType == "Sensitive Config Exposed" {
+			fType = "Sensitive Config/Backup Exposed"
+		}
+		if fType == "Critical Data Leak in Path" || fType == "Secret Leak" {
+			fType = "Sensitive Data Exposure"
+		}
+		f.Type = fType
+		normalized = append(normalized, f)
+
+		if sig := rootCauseCollapseSignature(f); sig != "" {
+			rootCauseSignatureCounts[sig]++
+		}
+	}
+
+	for _, f := range normalized {
+		fType := f.Type
 
 		var key string
 		if f.Severity == "Critical" || f.Severity == "High" {
-			// Strategy: Per-Endpoint Consolidation for High Impact
-			// We want to group multiple vectors (e.g. NoSQL $ne, $gt) on the SAME endpoint into one finding.
-			// Key: Type | Severity | Endpoint
+			// Strategy: Root-cause scope consolidation for exploit-grade findings.
+			clusterType := highSeverityClusterType(f)
 			ep := cleanEndpoint(f.Target)
-			key = fmt.Sprintf("%s|%s|%s", fType, f.Severity, ep)
+			scopeKey, scopeLabel := highSeverityScope(clusterType, ep)
+			// Keep one unique issue per type+scope regardless of High/Critical split.
+			key = fmt.Sprintf("%s|%s|%s", clusterType, scopeKey, scopeLabel)
+		} else if sig := rootCauseCollapseSignature(f); sig != "" && rootCauseSignatureCounts[sig] > 3 {
+			// Root-cause collapsing engine for noisy repeated medium/low/info findings.
+			key = "ROOTCAUSE::" + sig
 		} else {
 			// Strategy: Global Consolidation for Noise Reduction
 			// We want to group widespread low-impact issues (e.g. Missing Headers on 50 pages).
@@ -434,48 +574,87 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 	}
 
 	for key, group := range grouped {
-		parts := strings.Split(key, "|")
+		if strings.HasPrefix(key, "ROOTCAUSE::") {
+			signature := strings.TrimPrefix(key, "ROOTCAUSE::")
+			clusterLabel := rootCauseDisplayLabel(signature, group[0].Type)
+			detail := buildConciseRootCauseClusterDetail(group)
+
+			consolidated = append(consolidated, core.Finding{
+				Type:       clusterLabel,
+				Target:     fmt.Sprintf("%d Endpoints Detected", countUniqueTargets(group)),
+				Detail:     detail,
+				Severity:   maxSeverityInGroup(group),
+				Confidence: bestConfidenceInGroup(group),
+			})
+			continue
+		}
+
+		parts := strings.SplitN(key, "|", 3)
 		fType := parts[0]
-		fSeverity := parts[1]
+		fSeverity := ""
+		scopeLabel := ""
+		if len(parts) == 3 {
+			scopeLabel = parts[2]
+			fSeverity = maxSeverityInGroup(group)
+		} else if len(parts) == 2 {
+			fSeverity = parts[1]
+		} else if len(group) > 0 {
+			fSeverity = group[0].Severity
+		}
 
 		// --- HANDLING CRITICAL / HIGH ---
 		if fSeverity == "Critical" || fSeverity == "High" {
-			if len(group) > 1 {
-				// Consolidate multiple vectors on the same endpoint
-				ep := cleanEndpoint(group[0].Target)
-
-				var detailsBuilder strings.Builder
-				detailsBuilder.WriteString(fmt.Sprintf("Vulnerability confirmed via %d vectors/payloads on this endpoint.\n\nVectors:\n", len(group)))
-
-				for i, f := range group {
-					// Clean up detail for list format
-					cleanDetail := strings.ReplaceAll(f.Detail, "\n", "\n   ") // Indent multi-line details
-					detailsBuilder.WriteString(fmt.Sprintf("%d. %s\n   [Ref: %s]\n\n", i+1, cleanDetail, f.Target))
-				}
-
-				consolidated = append(consolidated, core.Finding{
-					Type:     fType,
-					Target:   ep, // Use the clean endpoint as the main target
-					Detail:   detailsBuilder.String(),
-					Severity: fSeverity,
-				})
-			} else {
-				// Single finding, add as is
-				consolidated = append(consolidated, group...)
+			// Always render as a cluster object (including singletons) to keep
+			// consistent root-cause style output and include original signatures.
+			displayTarget := cleanEndpoint(group[0].Target)
+			if strings.TrimSpace(scopeLabel) != "" {
+				displayTarget = scopeLabel
 			}
+
+			typeSeen := make(map[string]bool)
+			typeList := make([]string, 0, len(group))
+			for _, g := range group {
+				if !typeSeen[g.Type] {
+					typeSeen[g.Type] = true
+					typeList = append(typeList, g.Type)
+				}
+			}
+
+			detail := buildConciseHighSeverityClusterDetail(group, typeList)
+
+			consolidated = append(consolidated, core.Finding{
+				Type:       fType,
+				Target:     displayTarget,
+				Detail:     detail,
+				Severity:   fSeverity,
+				Confidence: bestConfidenceInGroup(group),
+			})
 			continue
 		}
 
 		// --- HANDLING MEDIUM / LOW / INFO ---
 
-		shouldConsolidate := len(group) > 1 && (strings.Contains(fType, "Web Cache") ||
+		autoConsolidateLowSignal := len(group) > 1 && (fSeverity == "Info" || fSeverity == "Low")
+		shouldConsolidate := autoConsolidateLowSignal || (len(group) > 1 && (strings.Contains(fType, "Web Cache") ||
 			strings.Contains(fType, "ORM Leak") ||
 			strings.Contains(fType, "S3 Bucket") ||
 			strings.Contains(fType, "SQL Injection") ||
-			strings.Contains(fType, "GraphQL") ||
+			fType == "Directory Listing Enabled" ||
+			fType == "Vulnerability" ||
+			fType == "XSLT Injection" ||
+			fType == "XPath Injection" ||
+			strings.Contains(fType, "Improper Trust in HTTP Headers (Proxy Bypass)") ||
+			strings.Contains(fType, "Cross-Site WebSocket Hijacking") ||
+			fType == "GraphQL Endpoint" ||
+			fType == "GraphQL Interface" ||
+			fType == "GraphQL Endpoint Discovery" ||
+			fType == "GraphQL Introspection" ||
+			fType == "GraphQL Batching" ||
+			fType == "JWT Header Info" ||
 			strings.Contains(fType, "SAML") ||
+			fType == "Path Discovered" ||
 			fType == "Accessible Path" ||
-			fType == "Mobile-Specific Endpoint")
+			fType == "Mobile-Specific Endpoint"))
 
 		if shouldConsolidate {
 			// Special handling for SAML Info
@@ -489,8 +668,8 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 				continue
 			}
 
-			// Special handling for GraphQL Info
-			if strings.Contains(fType, "GraphQL") {
+			// Special handling for GraphQL endpoint discovery (keep vulnerability types separate)
+			if fType == "GraphQL Endpoint" || fType == "GraphQL Interface" || fType == "GraphQL Endpoint Discovery" {
 				consolidated = append(consolidated, core.Finding{
 					Type:     "GraphQL Endpoints Detected",
 					Target:   fmt.Sprintf("%d Endpoints Detected", len(group)),
@@ -509,10 +688,11 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 			}
 
 			consolidated = append(consolidated, core.Finding{
-				Type:     fType,
-				Target:   fmt.Sprintf("%d Endpoints Detected", len(group)),
-				Detail:   detailsBuilder.String(),
-				Severity: fSeverity,
+				Type:       fType,
+				Target:     fmt.Sprintf("%d Endpoints Detected", len(group)),
+				Detail:     detailsBuilder.String(),
+				Severity:   fSeverity,
+				Confidence: bestConfidenceInGroup(group),
 			})
 		} else {
 			consolidated = append(consolidated, group...)
@@ -520,4 +700,563 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 	}
 
 	return consolidated
+}
+
+func rootCauseCollapseSignature(f core.Finding) string {
+	class := scanner.NormalizedVulnerabilityClass(f)
+	if class == "" {
+		return ""
+	}
+
+	eligible := map[string]bool{
+		"xml_query_injection":                           true,
+		"template_engine_injection":                     true,
+		"websocket_origin_policy_misconfiguration":      true,
+		"graphql_introspection":                         true,
+		"improper_trust_in_http_headers_(proxy_bypass)": true,
+	}
+	if !eligible[class] {
+		return ""
+	}
+
+	proof := scanner.ExecutionProofSignature(f.Detail)
+	if proof == "" {
+		proof = "none"
+	}
+	return class + "|" + proof + "|" + middlewareSignature(f.Detail)
+}
+
+func rootCauseDisplayLabel(signature, fallback string) string {
+	switch {
+	case strings.Contains(signature, "xml_query_injection"):
+		return "XML Query Injection"
+	case strings.Contains(signature, "template_engine_injection"):
+		return "Template Engine Injection"
+	case strings.Contains(signature, "websocket_origin_policy_misconfiguration"):
+		return "WebSocket Origin Policy Misconfiguration"
+	case strings.Contains(signature, "graphql_introspection"):
+		return "GraphQL Schema Discovery Exposure"
+	case strings.Contains(signature, "improper_trust_in_http_headers_(proxy_bypass)"):
+		return "Improper Trust in Proxy Headers"
+	default:
+		return fallback
+	}
+}
+
+func middlewareSignature(detail string) string {
+	d := strings.ToLower(detail)
+	switch {
+	case strings.Contains(d, "laravel"):
+		return "laravel"
+	case strings.Contains(d, "django"):
+		return "django"
+	case strings.Contains(d, "express"), strings.Contains(d, "node"):
+		return "node"
+	case strings.Contains(d, "spring"), strings.Contains(d, "java"):
+		return "spring"
+	case strings.Contains(d, "asp.net"), strings.Contains(d, "iis"):
+		return "aspnet"
+	case strings.Contains(d, "libxslt"):
+		return "libxslt"
+	case strings.Contains(d, "graphql"):
+		return "graphql"
+	case strings.Contains(d, "proxy"), strings.Contains(d, "header"):
+		return "proxy"
+	default:
+		return "unknown"
+	}
+}
+
+func countUniqueTargets(group []core.Finding) int {
+	return len(uniqueTargetList(group))
+}
+
+func uniqueTargetList(group []core.Finding) []string {
+	seen := make(map[string]bool, len(group))
+	targets := make([]string, 0, len(group))
+	for _, g := range group {
+		ep := cleanEndpoint(strings.TrimSpace(g.Target))
+		if ep == "" || seen[ep] {
+			continue
+		}
+		seen[ep] = true
+		targets = append(targets, ep)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+func representativeProofLines(group []core.Finding, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	type candidate struct {
+		target string
+		proof  string
+	}
+	picked := make([]candidate, 0, limit)
+	seen := make(map[string]bool)
+	for _, g := range group {
+		proof := extractMeaningfulProofLine(g.Detail)
+		if proof == "" {
+			proof = scanner.ExecutionProofSignature(g.Detail)
+		}
+		if proof == "" || proof == "none" {
+			proof = "behavior-change signal"
+		}
+		key := g.Type + "|" + proof
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		picked = append(picked, candidate{
+			target: cleanEndpoint(g.Target),
+			proof:  proof,
+		})
+		if len(picked) >= limit {
+			break
+		}
+	}
+
+	lines := make([]string, 0, len(picked))
+	for i, p := range picked {
+		lines = append(lines, fmt.Sprintf("%d. endpoint=%s proof=%s", i+1, p.target, p.proof))
+	}
+	return lines
+}
+
+func buildConciseRootCauseClusterDetail(group []core.Finding) string {
+	targets := uniqueTargetList(group)
+	reps := representativeProofLines(group, 3)
+	params := collectAffectedParameters(group)
+	policyNotes := collectPolicyNotes(group)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Root-cause collapse applied across %d related signals.\n", len(group)))
+	b.WriteString(fmt.Sprintf("Affected endpoints: %d\n", len(targets)))
+	if len(params) > 0 {
+		b.WriteString(fmt.Sprintf("Affected parameters: %s\n", strings.Join(params, ", ")))
+	}
+
+	maxTargets := len(targets)
+	if maxTargets > 8 {
+		maxTargets = 8
+	}
+	for i := 0; i < maxTargets; i++ {
+		b.WriteString(fmt.Sprintf("- %s\n", targets[i]))
+	}
+	if len(targets) > maxTargets {
+		b.WriteString(fmt.Sprintf("... %d additional endpoints omitted.\n", len(targets)-maxTargets))
+	}
+
+	if len(reps) > 0 {
+		b.WriteString("Representative evidence:\n")
+		for _, line := range reps {
+			b.WriteString(line + "\n")
+		}
+	}
+	for _, note := range policyNotes {
+		b.WriteString(note + "\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func buildConciseHighSeverityClusterDetail(group []core.Finding, typeList []string) string {
+	targets := uniqueTargetList(group)
+	reps := representativeProofLines(group, 3)
+	params := collectAffectedParameters(group)
+	policyNotes := collectPolicyNotes(group)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Root-cause cluster confirmed via %d vectors/payloads.\n", len(group)))
+	if len(typeList) > 0 {
+		b.WriteString(fmt.Sprintf("Affected signatures: %s\n", strings.Join(typeList, ", ")))
+	}
+	b.WriteString(fmt.Sprintf("Affected endpoints: %d\n", len(targets)))
+	if len(params) > 0 {
+		b.WriteString(fmt.Sprintf("Affected parameters: %s\n", strings.Join(params, ", ")))
+	}
+
+	maxTargets := len(targets)
+	if maxTargets > 10 {
+		maxTargets = 10
+	}
+	for i := 0; i < maxTargets; i++ {
+		b.WriteString(fmt.Sprintf("- %s\n", targets[i]))
+	}
+	if len(targets) > maxTargets {
+		b.WriteString(fmt.Sprintf("... %d additional endpoints omitted.\n", len(targets)-maxTargets))
+	}
+
+	if len(reps) > 0 {
+		b.WriteString("Representative evidence:\n")
+		for _, line := range reps {
+			b.WriteString(line + "\n")
+		}
+	}
+	for _, note := range policyNotes {
+		b.WriteString(note + "\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func extractMeaningfulProofLine(detail string) string {
+	for _, raw := range strings.Split(detail, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "root cause:") ||
+			strings.HasPrefix(lower, "impact:") ||
+			strings.HasPrefix(lower, "affected parameters:") ||
+			strings.HasPrefix(lower, "representative payload evidence") ||
+			strings.HasPrefix(lower, "validation status:") ||
+			strings.HasPrefix(lower, "evidence quality:") ||
+			strings.HasPrefix(lower, "- ") {
+			continue
+		}
+		return scanner.ExecutionProofSignature(line)
+	}
+	return ""
+}
+
+func collectAffectedParameters(group []core.Finding) []string {
+	set := make(map[string]bool)
+	for _, g := range group {
+		for _, raw := range strings.Split(g.Detail, "\n") {
+			line := strings.TrimSpace(raw)
+			if !strings.HasPrefix(strings.ToLower(line), "affected parameters:") {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			for _, p := range strings.Split(parts[1], ",") {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				set[p] = true
+			}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	params := make([]string, 0, len(set))
+	for p := range set {
+		params = append(params, p)
+	}
+	sort.Strings(params)
+	return params
+}
+
+func collectPolicyNotes(group []core.Finding) []string {
+	noteSet := make(map[string]bool)
+	for _, g := range group {
+		l := strings.ToLower(g.Detail)
+		if strings.Contains(l, "configuration exposure only; no auth bypass or data exposure proof was observed") {
+			noteSet["Configuration exposure only; no auth bypass or data exposure proof was observed."] = true
+		}
+		if strings.Contains(l, "policy misconfiguration signal only; no authenticated action, cookie replay, or csrf-over-websocket proof was observed") {
+			noteSet["Policy misconfiguration signal only; no authenticated action, cookie replay, or CSRF-over-WebSocket proof was observed."] = true
+		}
+		if strings.Contains(l, "informational signal only (no deterministic boolean/count/error proof)") {
+			noteSet["Informational signal only (no deterministic boolean/count/error proof)."] = true
+		}
+	}
+	if len(noteSet) == 0 {
+		return nil
+	}
+	notes := make([]string, 0, len(noteSet))
+	for note := range noteSet {
+		notes = append(notes, note)
+	}
+	sort.Strings(notes)
+	return notes
+}
+
+func highSeverityScope(fType, endpoint string) (string, string) {
+	ep := cleanEndpoint(endpoint)
+	u, err := url.Parse(ep)
+	if err != nil || u.Host == "" {
+		return "endpoint:" + ep, ep
+	}
+
+	host := strings.ToLower(u.Host)
+	path := strings.TrimSpace(u.Path)
+	if path == "" {
+		path = "/"
+	}
+	firstSeg := "/"
+	if trimmed := strings.Trim(path, "/"); trimmed != "" {
+		firstSeg = "/" + strings.SplitN(trimmed, "/", 2)[0]
+	}
+
+	t := strings.ToLower(strings.TrimSpace(fType))
+	hostLevelTypes := []string{
+		"xslt injection",
+		"xpath injection",
+		"server-side template injection",
+		"prototype pollution",
+		"saml vulnerability",
+		"improper trust in http headers",
+		"cross-site websocket hijacking",
+		"jwt none algorithm",
+		"nginx configuration error",
+		"critical data leak in path",
+		"sensitive data exposure",
+		"sensitive config",
+		"database dump exposed",
+		"secret leak",
+		"git exposure",
+		"local file inclusion",
+		"file read / path traversal",
+		"file/secret exposure misconfiguration",
+		"php type juggling",
+		"server-side template injection",
+		"vulnerability",
+		"nosql injection",
+	}
+	for _, marker := range hostLevelTypes {
+		if strings.Contains(t, marker) {
+			return "host:" + host, fmt.Sprintf("Host-level Root Cause (%s)", host)
+		}
+	}
+
+	familyTypes := []string{
+		"sql injection",
+		"ssrf injection",
+		"remote code execution",
+	}
+	for _, marker := range familyTypes {
+		if strings.Contains(t, marker) {
+			return "family:" + host + firstSeg, fmt.Sprintf("Endpoint Family (%s%s)", host, firstSeg)
+		}
+	}
+
+	return "endpoint:" + ep, ep
+}
+
+func highSeverityClusterType(f core.Finding) string {
+	t := strings.ToLower(strings.TrimSpace(f.Type))
+	d := strings.ToLower(strings.TrimSpace(f.Detail))
+	switch {
+	case strings.Contains(t, "nosql injection"):
+		return "NoSQL Injection"
+	case strings.Contains(t, "oracle sqli") || strings.Contains(t, "sql injection"):
+		return "SQL Injection"
+	case strings.Contains(t, "server-side template injection"):
+		if engine := fingerprintSSTIEngine(d); engine != "" {
+			return fmt.Sprintf("Server-Side Template Injection (%s)", engine)
+		}
+		return "Server-Side Template Injection"
+	case strings.Contains(t, "xslt injection"):
+		if engine := fingerprintXSLTEngine(d); engine != "" {
+			return fmt.Sprintf("XSLT Injection (%s)", engine)
+		}
+		return "XSLT Injection"
+	case strings.Contains(t, "xpath injection"):
+		return "XPath Injection"
+	case strings.Contains(t, "critical data leak in path") ||
+		strings.Contains(t, "sensitive data exposure") ||
+		strings.Contains(t, "secret leak") ||
+		strings.Contains(t, "database dump exposed") ||
+		strings.Contains(t, "sensitive config"):
+		return "Sensitive Data Exposure"
+	case strings.Contains(t, "local file inclusion") || strings.Contains(t, "nginx configuration error"):
+		return "File Read / Path Traversal"
+	default:
+		return f.Type
+	}
+}
+
+func countUniqueExploitable(findings []core.Finding) int {
+	unique := make(map[string]bool)
+	for _, f := range findings {
+		sev := normalizeSeverityLabel(f.Severity)
+		if sev != "Critical" && sev != "High" {
+			continue
+		}
+		class := uniqueExploitableClass(f)
+		scopeKey, _ := highSeverityScope(class, cleanEndpoint(f.Target))
+		unique[class+"|"+scopeKey] = true
+	}
+	return len(unique)
+}
+
+func uniqueExploitableClass(f core.Finding) string {
+	clusterType := highSeverityClusterType(f)
+	t := strings.ToLower(clusterType)
+	switch {
+	case strings.Contains(t, "sensitive data exposure"),
+		strings.Contains(t, "file read / path traversal"),
+		strings.Contains(t, "local file inclusion"):
+		return "File/Secret Exposure Misconfiguration"
+	default:
+		return clusterType
+	}
+}
+
+func fingerprintSSTIEngine(detailLower string) string {
+	switch {
+	case strings.Contains(detailLower, "jinja") || strings.Contains(detailLower, "twig"):
+		return "Jinja2/Twig"
+	case strings.Contains(detailLower, "smarty"):
+		return "Smarty"
+	case strings.Contains(detailLower, "freemarker"):
+		return "Freemarker"
+	case strings.Contains(detailLower, "erb") || strings.Contains(detailLower, "ruby"):
+		return "Ruby ERB"
+	case strings.Contains(detailLower, "mako"):
+		return "Mako"
+	case strings.Contains(detailLower, "velocity"):
+		return "Velocity"
+	default:
+		return ""
+	}
+}
+
+func fingerprintXSLTEngine(detailLower string) string {
+	switch {
+	case strings.Contains(detailLower, "libxslt"):
+		return "libxslt"
+	case strings.Contains(detailLower, "saxon"):
+		return "saxon"
+	case strings.Contains(detailLower, "xalan"):
+		return "xalan"
+	case strings.Contains(detailLower, "msxml"):
+		return "msxml"
+	default:
+		return ""
+	}
+}
+
+func exploitabilityScore(f core.Finding) int {
+	base := 10
+	switch normalizeSeverityLabel(f.Severity) {
+	case "Critical":
+		base = 70
+	case "High":
+		base = 55
+	case "Medium":
+		base = 35
+	case "Low":
+		base = 20
+	}
+
+	cluster := strings.ToLower(highSeverityClusterType(f))
+	fType := strings.ToLower(strings.TrimSpace(f.Type))
+	if severityRank(f.Severity) >= severityRank("High") {
+		switch {
+		case strings.Contains(cluster, "ssrf injection"):
+			base = 95
+		case strings.Contains(cluster, "sql injection"):
+			base = 80
+		case strings.Contains(cluster, "remote code execution"):
+			base = 88
+		case strings.Contains(cluster, "server-side template injection"),
+			strings.Contains(cluster, "xslt injection"),
+			strings.Contains(cluster, "xpath injection"):
+			base = 78
+		case strings.Contains(cluster, "prototype pollution"):
+			base = 75
+		case strings.Contains(cluster, "jwt none algorithm"):
+			base = 60
+		case strings.Contains(fType, "graphql introspection"):
+			base = 40
+		case strings.Contains(fType, "source map"), strings.Contains(fType, "sourcemap"):
+			base = 20
+		}
+	}
+
+	switch strings.ToLower(defaultConfidence(f.Confidence)) {
+	case "confirmed":
+		base += 10
+	case "noisy":
+		base -= 20
+	}
+	if quality, ok := scanner.ExtractEvidenceQualityScore(f.Detail); ok {
+		base = (base + quality) / 2
+	}
+
+	if base < 0 {
+		return 0
+	}
+	if base > 100 {
+		return 100
+	}
+	return base
+}
+
+func maxSeverityInGroup(group []core.Finding) string {
+	maxRank := -1
+	maxSeverity := "Info"
+	for _, f := range group {
+		r := severityRank(f.Severity)
+		if r > maxRank {
+			maxRank = r
+			maxSeverity = normalizeSeverityLabel(f.Severity)
+		}
+	}
+	return maxSeverity
+}
+
+func bestConfidenceInGroup(group []core.Finding) string {
+	best := "noisy"
+	bestRank := confidenceRank(best)
+	for _, f := range group {
+		c := defaultConfidence(f.Confidence)
+		r := confidenceRank(c)
+		if r > bestRank {
+			bestRank = r
+			best = c
+		}
+	}
+	return best
+}
+
+func confidenceRank(c string) int {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "confirmed":
+		return 3
+	case "probable":
+		return 2
+	case "noisy":
+		return 1
+	default:
+		return 1
+	}
+}
+
+func severityRank(sev string) int {
+	switch normalizeSeverityLabel(sev) {
+	case "Critical":
+		return 5
+	case "High":
+		return 4
+	case "Medium":
+		return 3
+	case "Low":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func normalizeSeverityLabel(sev string) string {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical":
+		return "Critical"
+	case "high":
+		return "High"
+	case "medium":
+		return "Medium"
+	case "low":
+		return "Low"
+	default:
+		return "Info"
+	}
 }

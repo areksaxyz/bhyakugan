@@ -9,10 +9,14 @@ import (
 )
 
 var (
-	rootPath = "/home/yupiyy/tools/bug/PayloadsAllTheThings"
+	rootPath string
 	mu       sync.RWMutex
 	cache    = make(map[string][]string)
 )
+
+func init() {
+	AutoDetectRoot()
+}
 
 func SetRoot(path string) {
 	path = strings.TrimSpace(path)
@@ -25,6 +29,32 @@ func SetRoot(path string) {
 		rootPath = path
 		cache = make(map[string][]string)
 	}
+}
+
+func AutoDetectRoot() string {
+	candidates := []string{}
+	if env := strings.TrimSpace(os.Getenv("BHYAKUGAN_PATT")); env != "" {
+		candidates = append(candidates, env)
+	}
+	candidates = append(candidates,
+		"./PayloadsAllTheThings",
+		"../PayloadsAllTheThings",
+		"../../PayloadsAllTheThings",
+	)
+
+	for _, c := range candidates {
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		SetRoot(abs)
+		return abs
+	}
+	return ""
 }
 
 func Root() string {
@@ -46,6 +76,10 @@ func LoadLines(relPath string, max int) []string {
 		return out
 	}
 	mu.RUnlock()
+
+	if Root() == "" {
+		return nil
+	}
 
 	abs := filepath.Join(Root(), relPath)
 	f, err := os.Open(abs)

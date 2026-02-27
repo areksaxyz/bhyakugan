@@ -32,7 +32,7 @@
 *   **SSRF Evolution**: Deteksi metadata cloud (AWS, Azure, GCP, DigitalOcean, Oracle) dan bypass localhost tingkat lanjut.
 *   **LFI & Wrapper**: Deteksi mendalam menggunakan PHP filter base64 dengan verifikasi konten otomatis untuk menghindari *Soft 404*.
 *   **Confidence-Aware Reporting**: Setiap finding diberi confidence (`confirmed`, `probable`, `noisy`) dan difilter sesuai mode scan.
-*   **Scan Modes**: `strict` (default), `balanced`, `aggressive` untuk menyesuaikan kedalaman dan toleransi noise.
+*   **Scan Modes**: `strict` (default), `balanced`, `aggressive` + alias `bounty` dan `lab` untuk profil operasional.
 *   **Fast Triage Profile**: Opsi `-fast` untuk skrining cepat target besar tanpa modul paling berat.
 
 ## 🌐 Arsitektur (Workflow)
@@ -114,10 +114,13 @@ Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 | `-depth` | Kedalaman crawling (1 = page ini saja, 2+ = recursive) |
 | `-payloads`| Path ke file wordlist kustom (Opsional) |
 | `-timeout` | HTTP Timeout dalam detik (default: 10) |
-| `-mode` | Mode scan: `strict`, `balanced`, `aggressive` (default: `strict`) |
+| `-mode` | Mode scan: `strict`, `balanced`, `aggressive`, `bounty`, `lab` (default: `strict`) |
+| `-strict-validation` | Filter ketat: drop temuan heuristik-only, prioritaskan bukti kontrol/validasi |
 | `-fast` | Profil triage cepat (mengurangi modul berat dan waktu scan) |
 | `-max-endpoints` | Batas endpoint per host (0 = auto/unlimited, di `-fast` akan dibatasi otomatis) |
-| `-patt` | Path ke repo `PayloadsAllTheThings` (default: `/home/yupiyy/tools/bug/PayloadsAllTheThings`) |
+| `-patt` | Path ke repo `PayloadsAllTheThings` (opsional, auto-detect jika tidak diisi) |
+
+`-patt` auto-detect urutan berikut: `BHYAKUGAN_PATT` (env), `./PayloadsAllTheThings`, `../PayloadsAllTheThings`, `../../PayloadsAllTheThings`.
 
 ## 🎯 Mode Scan
 
@@ -126,6 +129,8 @@ Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 | **strict** | Fokus high-confidence, menyaring finding `noisy`, cocok untuk bug bounty submission |
 | **balanced** | Menampilkan `confirmed` + `probable`, kompromi antara coverage dan noise |
 | **aggressive** | Menampilkan semua finding (termasuk yang berisiko noise), cocok untuk riset manual |
+| **bounty** | Alias ke profil `strict` (lebih jelas untuk workflow submission bounty) |
+| **lab** | Alias ke profil `aggressive` (eksplorasi maksimal di environment lab) |
 
 ## 📊 Confidence Finding
 

@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
@@ -104,6 +106,22 @@ func main() {
 	var liveHosts []string
 	var mainTarget string
 
+	// Handle signals for graceful shutdown and report generation
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n[!] Scan interrupted by user. Finalizing report...")
+		findingsMu.Lock()
+		if len(allFindings) > 0 {
+			saveReport(allFindings, liveHosts, mainTarget)
+		} else {
+			fmt.Println("[*] No findings to report.")
+		}
+		findingsMu.Unlock()
+		os.Exit(0)
+	}()
+
 	if *domainPtr != "" {
 		mainTarget = *domainPtr
 		subs, err := recon.RunSubdomainDiscovery(*domainPtr)
@@ -152,7 +170,16 @@ func main() {
 		scanner.Start(opts, client, onFound)
 	}
 
-	// Generate Report
+	// Generate Final Report
+	findingsMu.Lock()
+	saveReport(allFindings, liveHosts, mainTarget)
+	findingsMu.Unlock()
+}
+
+func saveReport(allFindings []core.Finding, liveHosts []string, mainTarget string) {
+	if len(allFindings) == 0 {
+		return
+	}
 	outputDir := "bhyakugan-output"
 	_ = os.MkdirAll(outputDir, 0755)
 

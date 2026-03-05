@@ -141,6 +141,11 @@ U8adf6jQYh6h3m7D8vP7K8x3NVBh9Wm9b8aY0abV3fMz7R9v4vD4VJ1J8cHkN42x
 			contentType: "text/plain; charset=utf-8",
 			body:        "FROM golang:1.22\nWORKDIR /app\n",
 		},
+		"/google-keys": {
+			status:      200,
+			contentType: "text/html; charset=utf-8",
+			body:        `<html><body><h1>Google API Keys</h1><p>Vulnerable: AIzaVulnerableKey12345678901234567890</p><p>Restricted: AIzaRestrictedKey09876543210987654321</p></body></html>`,
+		},
 		"/docker-compose.yml": {
 			status:      200,
 			contentType: "text/plain; charset=utf-8",
@@ -160,11 +165,9 @@ func main() {
 	mux := http.NewServeMux()
 
 	// GraphQL paths
-	for _, p := range []string{"/graphql", "/api/graphql", "/v1/graphql", "/graphql/console", "/explorer"} {
+	for _, p := range []string{"/graphql", "/api/graphql", "/v1/graphql", "/graphql/console", "/explorer", "/v1/graphiql", "/graphiql"} {
 		mux.HandleFunc(p, handleGraphQL)
 	}
-	mux.HandleFunc("/graphiql", handleGraphiQL)
-	mux.HandleFunc("/v1/graphiql", handleGraphiQL)
 
 	// SAML paths
 	for _, p := range []string{"/saml/acs", "/saml2/acs", "/SAML2/POST", "/auth/saml/callback", "/saml/consume"} {
@@ -175,6 +178,11 @@ func main() {
 	for _, p := range []string{"/ws", "/websocket", "/socket.io/", "/chat", "/realtime", "/api/v1/ws", "/cable"} {
 		mux.HandleFunc(p, handleWebSocket)
 	}
+
+	mux.HandleFunc("/maps/api/geocode/json", handleGoogleMock)
+	mux.HandleFunc("/v1/images:annotate", handleGoogleMock)
+	mux.HandleFunc("/v1beta/models", handleGoogleMock)
+	mux.HandleFunc("/v1/projects/x/installations", handleGoogleMock)
 
 	// Application routes
 	mux.HandleFunc("/", handleRoot)
@@ -191,41 +199,64 @@ func main() {
 	mux.HandleFunc("/static/app.js.map", handleAppJSMap)
 	mux.HandleFunc("/static/theme.css", handleThemeCSS)
 	mux.HandleFunc("/api/public/catalog", handleCatalog)
-
-	// False-positive traps
+	mux.HandleFunc("/static/config.js", handleDynamicJS)
+	mux.HandleFunc("/static/auth-utils.js", handleAuthUtilsJS)
+	mux.HandleFunc("/deleteCompanyModules", handleSQLiVulnerable)
 	mux.HandleFunc("/trap/reflection", handleTrapReflection)
 	mux.HandleFunc("/trap/soft404", handleTrapSoft404)
 	mux.HandleFunc("/trap/sql-static", handleTrapSQLStatic)
 
-	addr := ":" + port
-	fmt.Printf("[+] Bhyakugan Localhost Lab running on http://127.0.0.1%s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux)))
+	fmt.Printf("[+] Bhyakugan Localhost Lab running on http://127.0.0.1:%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Powered-By", "PHP/8.2.8")
-		w.Header().Set("Server", "nginx")
-		time.Sleep(time.Duration(rand.Intn(25)+10) * time.Millisecond)
-		next.ServeHTTP(w, r)
-	})
+func handleDynamicJS(w http.ResponseWriter, r *http.Request) {
+	// Simulate content change based on cookie (XSSI)
+	cookie, err := r.Cookie("PHPSESSID")
+	js := `var config = { "api": "/api/v1", "version": "1.0.0" };`
+	if err == nil && cookie.Value != "" {
+		js = `var config = { "api": "/api/v1", "version": "1.0.0", "csrf": "csrf-dynamic-token-12345", "session": "` + cookie.Value + `" };`
+	}
+	w.Header().Set("Content-Type", "application/javascript")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(js))
+}
+
+func handleAuthUtilsJS(w http.ResponseWriter, r *http.Request) {
+	js := `
+var tokenConstant = "IUNvbXBhbnlAMSE=";
+function getSDToken(deviceId, userId, strDesc) {
+    var dateConstant = Math.floor(new Date().getTime()/21600000);
+    var sdTokenTemp = deviceId + "|" + userId + "|" + strDesc + "|" + dateConstant;
+    var encoded = CryptoJS.HmacSHA256(sdTokenTemp, tokenConstant);
+    return encoded.toString(CryptoJS.enc.Base64);
+}
+`
+	w.Header().Set("Content-Type", "application/javascript")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(js))
+}
+
+func handleSQLiVulnerable(w http.ResponseWriter, r *http.Request) {
+	companyID := r.URL.Query().Get("companyID")
+	if strings.Contains(companyID, "'") {
+		writeText(w, 500, "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''' at line 1")
+		return
+	}
+	writeJSON(w, 200, `{"status":"success","message":"Modules deleted"}`)
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		handleRootPOST(w, r)
+		return
+	}
+
 	if served := maybeServeSensitiveFile(w, r); served {
 		return
 	}
+
 	if served := maybeServeLFIOrWrapper(w, r); served {
-		return
-	}
-
-	if r.URL.Path == "/" && hasHeaderTemplatePayload(r) {
-		writeText(w, 200, "uid=0(root) gid=0(root) groups=0(root)\nroot:x:0:0:root:/root:/bin/bash")
-		return
-	}
-
-	if r.Method == http.MethodPost {
-		handleRootPOST(w, r)
 		return
 	}
 
@@ -507,6 +538,20 @@ func handleGraphQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.Contains(lower, "policypageassetgroup") {
+		writeJSON(w, 200, `{"data":{"node":{"id":"Z2lkOi8vaGFja2Vyb25lL1BvbGljeVBhZ2VBc3NldEdyb3Vwc0luZGV4OjpQb2xpY3lQYWdlQXNzZXRHcm91cC8zOTgxLTQxMjg3","name":"Vulnerable Private Program Scope"}}}`)
+		return
+	}
+
+	if strings.Contains(lower, "organizations") && strings.Contains(lower, "projects") {
+		if strings.Contains(lower, "suggestedcollaborators") {
+			writeJSON(w, 200, `{"data":{"organizations":[{"projects":[{"suggestedCollaborators":[{"id":"1","email":"admin@corp.local","role":"ADMIN"},{"id":"2","email":"victim@corp.local","role":"USER"}]}]}]}}`)
+			return
+		}
+		writeJSON(w, 200, `{"data":{"organizations":[{"projects":[{"name":"Secret AI Project","webhooks":[{"id":"99","url":"https://hooks.internal/vulnerable"}]}]}]}}`)
+		return
+	}
+
 	writeJSON(w, 200, `{"data":{"__typename":"Query"}}`)
 }
 
@@ -569,12 +614,12 @@ func handleAppJS(w http.ResponseWriter, r *http.Request) {
     "/internal/config.json"
   ];
 
-	  async function loadCatalog() {
-	    const resp = await fetch("/api/public/catalog");
-	    const data = await resp.json();
-	    const el = document.getElementById("catalog");
-	    el.innerHTML = data.items.map((x) => "<li><strong>" + x.name + "</strong> - " + x.price + "</li>").join("");
-	  }
+          async function loadCatalog() {
+            const resp = await fetch("/api/public/catalog");
+            const data = await resp.json();
+            const el = document.getElementById("catalog");
+            el.innerHTML = data.items.map((x) => "<li><strong>" + x.name + "</strong> - " + x.price + "</li>").join("");
+          }
 
   document.addEventListener("DOMContentLoaded", () => {
     const tokenEl = document.getElementById("jwt-token");
@@ -987,6 +1032,8 @@ func baseDashboardHTML(wcd bool) string {
       <ul id="catalog"></ul>
     </section>
   </div>
+  <script src="/static/config.js"></script>
+  <script src="/static/auth-utils.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>`, stateTag)
@@ -1027,5 +1074,18 @@ func atoiWithDefault(v string, fallback int) int {
 	return n
 }
 
-// keep compiler happy for future extension hooks
-var _ = atoiWithDefault
+func handleGoogleMock(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeJSON(w, 401, `{"error":{"message":"API key not found."}}`)
+		return
+	}
+
+	if strings.Contains(key, "VulnerableKey") {
+		writeJSON(w, 200, `{"status":"OK","results":[]}`)
+	} else if strings.Contains(key, "RestrictedKey") {
+		writeJSON(w, 403, `{"error":{"message":"This API project is not authorized to use this API.","status":"PERMISSION_DENIED"}}`)
+	} else {
+		writeJSON(w, 401, `{"error":{"message":"API key not valid."}}`)
+	}
+}

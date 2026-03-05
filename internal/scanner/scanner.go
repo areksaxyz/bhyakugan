@@ -71,6 +71,7 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
 	ctx.Baseline = len(body)
 	bodyStr := strings.ToLower(string(body))
 
@@ -134,13 +135,28 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		maxEndpoints = 25
 	}
 
+	var scanEndpoint func(string, bool, bool)
+
+	// Wrap reportFinding to auto-scan newly discovered paths
+	wrappedReportFinding := func(f core.Finding) {
+		reportFinding(f)
+		if f.Type == "Path Discovered" || f.Type == "Sensitive Config/Backup Exposed" {
+			// Trigger a scan on this new endpoint, forcing it if it was already marked as scanned
+			go scanEndpoint(f.Target, false, true)
+		}
+	}
+
 	ctx := profileTarget(opts.Target, client)
 	if ctx.Baseline == -1 {
-		fmt.Printf("[-] Failed to establish baseline for %s after retries. Running limited directory checks.\n", opts.Target)
-		directories.Scan(opts.Target, client, reportFinding)
-		return
+		if strings.HasSuffix(strings.ToLower(opts.Target), ".js") {
+			fmt.Printf("[*] Target is a JS file. Running JS Analyzer only.\n")
+			jsanalyzer.ScanJS(opts.Target, client, nil, wrappedReportFinding)
+			return
+		}
+		fmt.Printf("[-] Failed to establish baseline for %s. Running fallback scan.\n", opts.Target)
+	} else {
+		fmt.Printf("[*] Profile: %s | Lang=%s | WAF=%s\n", opts.Target, ctx.Language, ctx.WAF)
 	}
-	fmt.Printf("[*] Profile: %s | Lang=%s | WAF=%s\n", opts.Target, ctx.Language, ctx.WAF)
 
 	baselineURL := opts.Target
 	if !strings.HasSuffix(baselineURL, "/") {
@@ -177,9 +193,9 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	var endpointMu sync.Mutex
 	endpointLimitNotified := false
 
-	scanEndpoint := func(url string, isRoot bool) {
+	scanEndpoint = func(url string, isRoot bool, force bool) {
 		endpointMu.Lock()
-		if !isRoot && maxEndpoints > 0 && len(scannedEndpoints) >= maxEndpoints {
+		if !isRoot && !force && maxEndpoints > 0 && len(scannedEndpoints) >= maxEndpoints {
 			if !endpointLimitNotified {
 				fmt.Printf("[*] Endpoint cap reached (%d). Skipping additional endpoints.\n", maxEndpoints)
 				endpointLimitNotified = true
@@ -187,7 +203,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			endpointMu.Unlock()
 			return
 		}
-		if scannedEndpoints[url] {
+		if !force && scannedEndpoints[url] {
 			endpointMu.Unlock()
 			return
 		}
@@ -204,48 +220,48 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		}
 
 		hasParams := strings.Contains(url, "?")
-		runP(func() { secrets.Scan(url, client, reportFinding) })
+		runP(func() { secrets.Scan(url, client, wrappedReportFinding) })
 
 		if !opts.Fast && (isRoot || hasParams) {
-			runP(func() { vulns.Scan(url, client, opts.PayloadFile, reportFinding) })
-			runP(func() { rce.Scan(url, client, ctx, reportFinding) })
-			runP(func() { nosqli.Scan(url, client, ctx, reportFinding) })
-			runP(func() { sqli.Scan(url, client, ctx, reportFinding) })
-			runP(func() { ssrf.Scan(url, client, reportFinding) })
-			runP(func() { ssti.Scan(url, client, reportFinding) })
-			runP(func() { xpath.Scan(url, client, reportFinding) })
-			runP(func() { xslt.Scan(url, client, reportFinding) })
-			runP(func() { pp.Scan(url, client, reportFinding) })
+			runP(func() { vulns.Scan(url, client, opts.PayloadFile, reportFinding) }) // vulns.Scan takes reportFinding
+			runP(func() { rce.Scan(url, client, ctx, wrappedReportFinding) })
+			runP(func() { nosqli.Scan(url, client, ctx, wrappedReportFinding) })
+			runP(func() { sqli.Scan(url, client, ctx, wrappedReportFinding) })
+			runP(func() { ssrf.Scan(url, client, wrappedReportFinding) })
+			runP(func() { ssti.Scan(url, client, wrappedReportFinding) })
+			runP(func() { xpath.Scan(url, client, wrappedReportFinding) })
+			runP(func() { xslt.Scan(url, client, wrappedReportFinding) })
+			runP(func() { pp.Scan(url, client, wrappedReportFinding) })
 		}
 
 		if !opts.Fast && (isRoot || strings.Contains(strings.ToLower(url), "login") || strings.Contains(strings.ToLower(url), "auth")) {
-			runP(func() { wcd.Scan(url, client, reportFinding) })
-			runP(func() { typejuggling.Scan(url, client, ctx, reportFinding) })
+			runP(func() { wcd.Scan(url, client, wrappedReportFinding) })
+			runP(func() { typejuggling.Scan(url, client, ctx, wrappedReportFinding) })
 		}
 
 		if !opts.Fast {
-			runP(func() { proxy.Scan(url, client, reportFinding) })
+			runP(func() { proxy.Scan(url, client, wrappedReportFinding) })
 		}
 
 		if isRoot {
 			if !opts.Fast {
-				runP(func() { saml.Scan(url, client, reportFinding) })
+				runP(func() { saml.Scan(url, client, wrappedReportFinding) })
 			}
-			runP(func() { graphql.Scan(url, client, reportFinding) })
-			runP(func() { git.Scan(url, client, reportFinding) })
+			runP(func() { graphql.Scan(url, client, wrappedReportFinding) })
+			runP(func() { git.Scan(url, client, wrappedReportFinding) })
 		}
 		pWg.Wait()
 	}
 
-	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true) })
-	run("Directories", func() { directories.Scan(opts.Target, client, reportFinding) })
+	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true, false) })
+	run("Directories", func() { directories.Scan(opts.Target, client, wrappedReportFinding) })
 	if !opts.Fast {
-		run("WebSocket", func() { websocket.Scan(opts.Target, client, reportFinding) })
-		run("ORM Leak", func() { ormleak.Scan(opts.Target, client, reportFinding) })
+		run("WebSocket", func() { websocket.Scan(opts.Target, client, wrappedReportFinding) })
+		run("ORM Leak", func() { ormleak.Scan(opts.Target, client, wrappedReportFinding) })
 	}
 
 	if mainBody != "" {
-		run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, reportFinding) })
+		run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, wrappedReportFinding) })
 
 		wg.Add(1)
 		go func() {
@@ -285,7 +301,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 									defer scanWg.Done()
 									scanSem <- struct{}{}
 									defer func() { <-scanSem }()
-									scanEndpoint(l, false)
+									scanEndpoint(l, false, false)
 								}(current.URL)
 							}
 						}
@@ -389,7 +405,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						select {
 						case jsSem <- struct{}{}:
 							defer func() { <-jsSem }()
-							jsanalyzer.ScanJS(u, client, nil, reportFinding) // Pass nil as we handle WaitGroup locally in this goroutine
+							jsanalyzer.ScanJS(u, client, nil, wrappedReportFinding) // Pass nil as we handle WaitGroup locally in this goroutine
 						case <-time.After(4 * time.Second):
 							// Don't wait forever for a slot in jsSem
 							return

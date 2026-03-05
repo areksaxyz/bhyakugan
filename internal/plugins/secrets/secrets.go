@@ -68,20 +68,22 @@ var Patterns = []SecretPattern{
 	},
 	{
 		Name:      "AWS Access Key",
-		Pattern:   regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
-		Severity:  "Info", // Downgraded to Info (Unvalidated)
+		Pattern:   regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),
+		Severity:  "Info",
+		Validator: nil,
+	},
+	{
+		Name:      "AWS Secret Access Key",
+		Pattern:   regexp.MustCompile(`\b[0-9a-zA-Z/+=]{40}\b`),
+		Severity:  "Info",
 		Validator: nil,
 	},
 	{
 		Name:     "Google API Key",
-		Pattern:  regexp.MustCompile(`AIza[0-9A-Za-z\-_]{35}`),
+		Pattern:  regexp.MustCompile(`AIza[0-9A-Za-z\-_]+`),
 		Severity: "Info",
-		// Validation to distinguish Junk vs Real Key
-		Validator: &Validator{
-			Method:       "GET",
-			URL:          "https://www.googleapis.com/language/translate/v2?key=%s&q=hello&target=es",
-			ExpectedCode: 200,
-		},
+		// Validation logic moved to exploitation_engine.go
+		Validator: nil, 
 	},
 	{
 		Name:     "Stripe Live Key",
@@ -103,7 +105,7 @@ var Patterns = []SecretPattern{
 			URL:             "https://slack.com/api/auth.test",
 			Headers:         map[string]string{"Authorization": "Bearer %s", "Content-Type": "application/json"},
 			ExpectedCode:    200,
-			ExpectedContent: "\"ok\":true",
+			ExpectedContent: `"ok":true`,
 		},
 	},
 	{
@@ -140,10 +142,6 @@ var Patterns = []SecretPattern{
 		Pattern:   regexp.MustCompile(`'password'\s*=>\s*'[^']+'`),
 		Severity:  "Medium", // Default to Medium (Potential Config Leak)
 		Validator: nil,
-		// Note: The pattern itself ensures a password assignment is present.
-		// However, to be strict as requested:
-		// If it matches, it means we found `'password' => '...'`.
-		// We will treat this as HIGH in the detection logic if valid, but base definition starts lower to be safe.
 	},
 	{
 		Name:      "SQL Dump (Plaintext Admin)",
@@ -183,7 +181,11 @@ func isSQLContent(content string) bool {
 
 // Scan checks the response body for secrets
 func Scan(url string, client *http.Client, onFound func(core.Finding)) {
-	resp, err := client.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
@@ -205,6 +207,14 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				rawKey = m[len(m)-1]
 			}
 			cleanKey := strings.Trim(rawKey, ` "'=`)
+			
+			if len(cleanKey) < 8 && p.Name != "Database Backup File" {
+				continue
+			}
+			if p.Name == "Google API Key" && len(cleanKey) < 35 {
+				continue
+			}
+
 			if p.Name == "Private Key" && !isLikelyRealPrivateKeyBlock(cleanKey) {
 				continue
 			}
@@ -232,18 +242,7 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 			severity := p.Severity
 
 			// Special handling for Database Backup File:
-			// If we matched the pattern (likely in the URL/Link), we MUST verify the content actually looks like SQL.
-			// This prevents Soft 404s on .sql files from being reported.
 			if p.Name == "Database Backup File" {
-				// 1. If the match is just the filename in a directory listing or link,
-				// we usually scan the CONTENT of that file separately (via crawling).
-				// But here `content` is the body of the page we are scanning.
-				// If we are scanning `index.html` and it links to `backup.sql`, that's a finding (Info).
-				// BUT if we are scanning `backup.sql` itself, we need to check content.
-
-				// Case A: Pattern matched inside the body (Link Discovery) -> Info
-				// Case B: We are scanning the file itself (sourceURL ends in .sql) -> Content Check
-
 				if strings.HasSuffix(strings.ToLower(sourceURL), ".sql") {
 					if !isSQLContent(content) {
 						continue // False Positive (Soft 404 or non-SQL content)
@@ -251,15 +250,12 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 					severity = "Critical" // It's a verified dump!
 					detail = "Verified SQL Dump file (Header/Structure confirmed)."
 				} else {
-					// Do not report backup.sql mention inside docs/tutorial pages.
 					continue
 				}
 			}
 
 			// Special handling for CodeIgniter Config
 			if p.Name == "CodeIgniter DB Config" {
-				// The regex matches 'password' => '...', so we know it has a password candidate.
-				// However, check if it's empty or placeholder
 				if strings.Contains(cleanKey, "''") || strings.Contains(cleanKey, "'password'") { // empty password
 					severity = "Medium"
 					detail = "Found DB Config pattern (Empty/Placeholder password)."
@@ -269,10 +265,14 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				}
 			}
 
+			if p.Name == "Google API Key" {
+				RunExploitationEngine(p.Name, cleanKey, sourceURL, onFound)
+				continue 
+			}
+
 			if p.Validator != nil {
-				// Special handling for localhost/test
 				if strings.Contains(sourceURL, "localhost") && strings.Contains(p.Validator.URL, "localhost") {
-					// Skip validation loop
+					// Skip
 				} else {
 					status, msg := verifyKey(cleanKey, p.Validator)
 
@@ -284,10 +284,8 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 						severity = "Info"
 						detail = fmt.Sprintf("VERIFIED %s (Restricted): %s (%s)", p.Name, cleanKey, msg)
 					case "Invalid":
-						// Invalid key is informational noise, skip reporting.
 						continue
 					case "Error":
-						// Network/API errors during validation create noisy false positives.
 						continue
 					}
 				}
@@ -371,7 +369,6 @@ func verifyKey(key string, v *Validator) (string, string) {
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
 
-	// 1. Check Success
 	if resp.StatusCode == v.ExpectedCode {
 		if v.ExpectedContent != "" {
 			if !strings.Contains(bodyStr, v.ExpectedContent) {
@@ -379,7 +376,6 @@ func verifyKey(key string, v *Validator) (string, string) {
 			}
 		}
 
-		// Additional Anti-FP: Check for Google/Standard denial keywords in body
 		if strings.Contains(bodyStr, "REQUEST_DENIED") || strings.Contains(bodyStr, "API_KEY_INVALID") || strings.Contains(bodyStr, "key is invalid") {
 			return "Invalid", "Denied by Provider"
 		}
@@ -387,21 +383,9 @@ func verifyKey(key string, v *Validator) (string, string) {
 		return "Valid", "Active"
 	}
 
-	// 2. Check Restricted/Invalid
 	if resp.StatusCode == 403 || resp.StatusCode == 401 {
 		return "Restricted", "Unauthorized (Invalid or Restricted)"
 	}
-
-	// 3. Check Invalid (400, 401, 404 depending on API)
-	// For most APIs, 401 = Invalid Key. 400 = Bad Request (Could be valid key but missing params).
-	// Anthropic exception: 400 is "Valid Key but bad request".
-	// Google exception: 400 is "Bad Request" (Key might be invalid OR valid).
-	// To be safe: If code is 4xx/5xx and NOT expected, assume Invalid OR Restricted.
-
-	// Refined Logic:
-	// If 400 -> "Invalid" for Google (usually INVALID_ARGUMENT or API_KEY_INVALID)
-	// If 401 -> "Invalid"
-	// If 5xx -> "Error"
 
 	if resp.StatusCode == 401 {
 		return "Invalid", "401 Unauthorized"

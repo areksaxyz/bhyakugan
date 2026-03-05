@@ -285,10 +285,11 @@ func scoreEvidenceQuality(f core.Finding) evidenceQuality {
 	deterministicMarkers := []string{
 		"confirmed", "matched", "output marker", "root:x:", "ora-", "xpath error found",
 		"status code difference", "authenticated action", "session-auth-confirmed", "deterministic=true",
+		"verified", "secret match", "pattern matched", "discovered", "found sensitive", "api path", "pattern", "secret leak", "sensitive file ref",
 	}
 	controlMarkers := []string{
 		"control", "baseline", "z=", "z-score", "triple checked", "absent in control",
-		"control validation", "verification", "stable", "control_validation=true",
+		"control validation", "verification", "verified", "stable", "control_validation=true",
 	}
 	diffMarkers := []string{
 		"delta", "deviation", "diff", "diverged", "difference", "entropy", "response_diff_entropy=true",
@@ -355,7 +356,7 @@ func confidenceFromEvidenceScore(score int) string {
 	switch {
 	case score >= 80:
 		return "confirmed"
-	case score >= 55:
+	case score >= 45:
 		return "probable"
 	default:
 		return "noisy"

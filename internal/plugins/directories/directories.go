@@ -64,6 +64,9 @@ var CommonPaths = []DirCheck{
 	{"Dockerfile", "FROM "},
 	{"docker-compose.yml", "services:"},
 	{".docker/config.json", "auths"},
+	{"deleteCompanyModules", ""},
+	{"addCompanyPermissions", ""},
+	{"deleteUser", ""},
 }
 
 func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {

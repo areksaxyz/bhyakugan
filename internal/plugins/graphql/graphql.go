@@ -24,19 +24,45 @@ var GraphQLEndpoints = []string{
 
 // Scan checks for GraphQL endpoints and misconfigurations
 func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
-	if baseURL[len(baseURL)-1] != '/' {
-		baseURL += "/"
+	var wg sync.WaitGroup
+
+	// Check if baseURL itself is a GraphQL endpoint
+	baseURLTrim := strings.TrimSuffix(baseURL, "/")
+	isLikelyEndpoint := false
+	for _, p := range GraphQLEndpoints {
+		if strings.HasSuffix(baseURLTrim, p) {
+			isLikelyEndpoint = true
+			break
+		}
 	}
 
-	var wg sync.WaitGroup
+	if isLikelyEndpoint {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkEndpoint(baseURL, client, onFound)
+		}()
+	}
 
 	// 1. Endpoint Discovery
 	for _, path := range GraphQLEndpoints {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
-			target := baseURL + strings.TrimPrefix(p, "/")
-			checkEndpoint(target, client, onFound)
+
+			// Skip if it would result in the same URL as baseURL
+			target := baseURL
+			if !strings.HasSuffix(target, "/") {
+				target += "/"
+			}
+			targetPath := strings.TrimPrefix(p, "/")
+			
+			// Avoid double appending (e.g. /graphql/graphql)
+			if strings.HasSuffix(baseURLTrim, "/"+targetPath) || baseURLTrim == targetPath {
+				return
+			}
+
+			checkEndpoint(target+targetPath, client, onFound)
 		}(path)
 	}
 
@@ -45,7 +71,12 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) {
 	// Step 1: TCP Connection & HTTP Request
-	resp, err := client.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return
+	}
+	utils.SetDefaultHeaders(req, url)
+	resp, err := client.Do(req)
 
 	// Rule 1: Connection Refused = Silent Discard
 	errType := utils.ClassifyError(err)
@@ -88,17 +119,13 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 			// Probe Introspection/Batching even if it's UI
 			checkIntrospection(url, client, onFound)
 			checkBatching(url, client, onFound)
+			checkGidBOLA(url, client, onFound)
 		}
 		return
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
-
-	// 3. Body Indicators (Strict)
-	// Must contain one of: "errors", "data", "introspection", "Cannot query field", "syntax error"
-	// BUT "errors" is too generic for JSON APIs.
-	// GraphQL errors usually look like: {"errors":[{"message":...}]}
 
 	isGraphQL := false
 	if strings.Contains(bodyStr, `{"data":`) {
@@ -120,6 +147,125 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 		})
 		checkIntrospection(url, client, onFound)
 		checkBatching(url, client, onFound)
+		checkGidBOLA(url, client, onFound)
+		checkFieldBypass(url, client, onFound)
+	}
+}
+
+func checkFieldBypass(url string, client *http.Client, onFound func(core.Finding)) {
+	// Inspired by "$1,500 PII Leak via GraphQL Field-Level Permission Bypass"
+	// We test for common nested bypasses: Parent -> Child instead of direct ID query.
+	queries := []struct {
+		Name    string
+		Payload string
+	}{
+		{
+			Name:    "Nested Project/Webhook Bypass",
+			Payload: `{"query":"{organizations{projects{name,webhooks{id,url}}}}"}`,
+		},
+		{
+			Name:    "Duplicate/Alias Field Bypass (suggestedCollaborators)",
+			Payload: `{"query":"{organizations{projects{suggestedCollaborators{id,email,role}}}}"}`,
+		},
+		{
+			Name:    "Direct Member Leak",
+			Payload: `{"query":"{organizations{members{id,email,username}}}"}`,
+		},
+	}
+
+	for _, q := range queries {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(q.Payload)))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		utils.SetDefaultHeaders(req, url)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		bodyStr := string(body)
+
+		// Check for successful data retrieval of sensitive-looking fields
+		if strings.Contains(bodyStr, `"data":`) && !strings.Contains(bodyStr, `"errors":`) {
+			isVulnerable := false
+			detail := ""
+
+			if strings.Contains(bodyStr, `"email":`) || strings.Contains(bodyStr, `"webhooks":`) {
+				isVulnerable = true
+				detail = fmt.Sprintf("Sensitive PII/Config leaked via nested query (%s).", q.Name)
+			} else if strings.Contains(bodyStr, `"suggestedCollaborators":`) && !strings.Contains(bodyStr, `"suggestedCollaborators":null`) {
+				isVulnerable = true
+				detail = "PII Leak via unauthenticated suggestedCollaborators alias."
+			}
+
+			if isVulnerable {
+				fmt.Printf("[!] HIGH: GraphQL Field Bypass detected at %s (%s)\n", url, q.Name)
+				onFound(core.Finding{
+					Type:       "GraphQL Permission Bypass",
+					Target:     url,
+					Detail:     detail + " Response preview: " + utils.Truncate(bodyStr, 200),
+					Severity:   "High",
+					Confidence: "confirmed",
+				})
+			}
+		}
+	}
+}
+
+func checkGidBOLA(url string, client *http.Client, onFound func(core.Finding)) {
+	// Inspired by HackerOne #1618347: Disclosing PolicyPageAssetGroup via /graphql gid://...
+	// We test for common GID patterns that might be vulnerable to BOLA/IDOR without auth.
+	queries := []struct {
+		Name    string
+		Payload string
+	}{
+		{
+			Name:    "HackerOne GID BOLA (PolicyPageAssetGroup)",
+			Payload: `{"query":"{node(id:\"gid://hackerone/PolicyPageAssetGroupsIndex::PolicyPageAssetGroup/3981-41287\"){... on PolicyPageAssetGroupDocument{id,name}}}"}`,
+		},
+		{
+			Name:    "Generic GID BOLA (User)",
+			Payload: `{"query":"{node(id:\"gid://app/User/1\"){... on User{id,email,username}}}"}`,
+		},
+	}
+
+	for _, q := range queries {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(q.Payload)))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		utils.SetDefaultHeaders(req, url)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		bodyStr := string(body)
+		
+
+		// If we get "data" and "node" without errors, it's likely a BOLA/IDOR
+		if strings.Contains(bodyStr, `"data":`) && strings.Contains(bodyStr, `"node":`) && !strings.Contains(bodyStr, `"errors":`) {
+			// Double check if it actually returned an object
+			if !strings.Contains(bodyStr, `"node":null`) {
+				fmt.Printf("[!] CRITICAL: GraphQL GID BOLA detected at %s (%s)\n", url, q.Name)
+				onFound(core.Finding{
+					Type:       "GraphQL BOLA",
+					Target:     url,
+					Detail:     fmt.Sprintf("Unauthorized object disclosure via GID (%s). Response: %s", q.Name, bodyStr),
+					Severity:   "Critical",
+					Confidence: "confirmed",
+				})
+			}
+		}
 	}
 }
 
@@ -132,6 +278,7 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	utils.SetDefaultHeaders(req, url)
 
 	resp, err := client.Do(req)
 
@@ -169,6 +316,7 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	utils.SetDefaultHeaders(req, url)
 
 	resp, err := client.Do(req)
 

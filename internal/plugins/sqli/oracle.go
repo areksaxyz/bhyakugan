@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/yupiyy/bhyakugan/internal/utils"
 )
 
 // ScanOracleLengthFilter attempts to detect Oracle SQLi where WAF/Filters block long payloads
@@ -25,7 +26,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 	baseBody, _ := io.ReadAll(respBase.Body)
 	respBase.Body.Close()
 	baseCode := respBase.StatusCode
-	baseLen := len(baseBody)
+	baseLen := len(utils.NormalizeBody(string(baseBody)))
 
 	// 2. Check for Length Filter (Heuristic)
 	// Send a long benign payload (150+ chars)
@@ -78,6 +79,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		}
 		bodyT, _ := io.ReadAll(respT.Body)
 		respT.Body.Close()
+		normBodyT := utils.NormalizeBody(string(bodyT))
 
 		// Test False
 		q.Set(param, originalVal+payloadFalse)
@@ -90,6 +92,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		}
 		bodyF, _ := io.ReadAll(respF.Body)
 		respF.Body.Close()
+		normBodyF := utils.NormalizeBody(string(bodyF))
 
 		// 4. Verification Logic
 		// Logic: True Payload should be similar to Baseline (200 OK)
@@ -115,8 +118,8 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		}
 
 		// Check 3: Length/Content deviation
-		lenT := len(bodyT)
-		lenF := len(bodyF)
+		lenT := len(normBodyT)
+		lenF := len(normBodyF)
 
 		if !isConfirmed {
 			// TRIPLE CHECK for Length Deviation

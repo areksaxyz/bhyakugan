@@ -4,8 +4,35 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
+
+// NormalizeBody removes dynamic content like timestamps, numbers, and random strings
+// to allow more stable comparisons between responses.
+func NormalizeBody(body string) string {
+	// 1. Convert to lowercase
+	normalized := strings.ToLower(body)
+
+	// 2. Remove common dynamic patterns
+	
+	// Remove numbers (counts, times, IDs)
+	reNumbers := regexp.MustCompile(`\d+`)
+	normalized = reNumbers.ReplaceAllString(normalized, "0")
+
+	// Remove hex strings (hashes, session IDs)
+	reHex := regexp.MustCompile(`[0-9a-f]{8,}`)
+	normalized = reHex.ReplaceAllString(normalized, "HEX")
+
+	// Remove common dynamic keywords context
+	reRender := regexp.MustCompile(`rendered in [0\.0-9]+ seconds`)
+	normalized = reRender.ReplaceAllString(normalized, "RENDER_TIME")
+
+	// 3. Trim whitespace
+	normalized = strings.Join(strings.Fields(normalized), " ")
+
+	return normalized
+}
 
 // ResponseFingerprint captures routing/auth behavior used to suppress false positives.
 type ResponseFingerprint struct {

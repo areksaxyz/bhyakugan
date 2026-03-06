@@ -366,11 +366,12 @@ func performTimedRequest(client *http.Client, target string) timedHTTPResponse {
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyStr := string(bodyBytes)
 	return timedHTTPResponse{
 		duration:   duration,
 		statusCode: resp.StatusCode,
-		bodyLower:  strings.ToLower(string(bodyBytes)),
-		bodyHash:   hashBody(bodyBytes),
+		bodyLower:  strings.ToLower(bodyStr),
+		bodyHash:   hashBody([]byte(utils.NormalizeBody(bodyStr))),
 		redirects:  countRedirects(resp),
 	}
 }

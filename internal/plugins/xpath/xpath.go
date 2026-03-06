@@ -323,9 +323,18 @@ func detectDeterministicDifferential(base xpathBaseline, trueProbe, falseProbe x
 		return "", false
 	}
 
-	trueDiffersFromBase := trueProbe.status != base.status || trueProbe.bodyHash != base.bodyHash || !utils.IsRedirectAwareIdentical(base.fingerprint, trueProbe.fp)
-	falseMatchesBase := falseProbe.bodyHash == base.bodyHash || utils.IsRedirectAwareIdentical(base.fingerprint, falseProbe.fp)
-	trueFalseDifferent := trueProbe.status != falseProbe.status || trueProbe.bodyHash != falseProbe.bodyHash
+	// Normalize bodies for final differential confirmation to avoid dynamic noise
+	normTrue := utils.NormalizeBody(trueProbe.bodyLower)
+	normFalse := utils.NormalizeBody(falseProbe.bodyLower)
+	normBase := utils.NormalizeBody(base.bodyLower)
+
+	trueHash := hashBytes([]byte(normTrue))
+	falseHash := hashBytes([]byte(normFalse))
+	baseHash := hashBytes([]byte(normBase))
+
+	trueDiffersFromBase := trueProbe.status != base.status || trueHash != baseHash || !utils.IsRedirectAwareIdentical(base.fingerprint, trueProbe.fp)
+	falseMatchesBase := falseHash == baseHash || utils.IsRedirectAwareIdentical(base.fingerprint, falseProbe.fp)
+	trueFalseDifferent := trueProbe.status != falseProbe.status || trueHash != falseHash
 
 	if !trueDiffersFromBase || !falseMatchesBase || !trueFalseDifferent {
 		return "", false
@@ -333,9 +342,9 @@ func detectDeterministicDifferential(base xpathBaseline, trueProbe, falseProbe x
 
 	switch mode {
 	case "boolean":
-		return fmt.Sprintf("Boolean true/false differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueProbe.bodyHash), falseProbe.status, shortHash(falseProbe.bodyHash)), true
+		return fmt.Sprintf("Boolean true/false differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueHash), falseProbe.status, shortHash(falseHash)), true
 	case "count":
-		return fmt.Sprintf("count() differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueProbe.bodyHash), falseProbe.status, shortHash(falseProbe.bodyHash)), true
+		return fmt.Sprintf("count() differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueHash), falseProbe.status, shortHash(falseHash)), true
 	default:
 		return "Deterministic differential confirmed", true
 	}
@@ -402,12 +411,13 @@ func collectBaselines(baseURL string, params []string, client *http.Client) map[
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		bodyLower := strings.ToLower(string(body))
+		bodyStr := string(body)
+		bodyLower := strings.ToLower(bodyStr)
 		fp := utils.BuildResponseFingerprint(resp, body)
 
 		out[param] = xpathBaseline{
 			bodyLower:    bodyLower,
-			bodyHash:     hashBytes(body),
+			bodyHash:     hashBytes([]byte(utils.NormalizeBody(bodyStr))),
 			status:       resp.StatusCode,
 			fingerprint:  fp,
 			authGateSeen: utils.IsAuthGateFingerprint(fp, bodyLower),
@@ -432,9 +442,10 @@ func requestPayload(baseURL, param, payload string, client *http.Client) (target
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	bodyLower = strings.ToLower(string(body))
+	bodyStr := string(body)
+	bodyLower = strings.ToLower(bodyStr)
 	fp = utils.BuildResponseFingerprint(resp, body)
-	return target, resp.StatusCode, bodyLower, hashBytes(body), fp, true
+	return target, resp.StatusCode, bodyLower, hashBytes([]byte(utils.NormalizeBody(bodyStr))), fp, true
 }
 
 func pickRepresentativeEvidence(all []xpathEvidence, max int) []xpathEvidence {

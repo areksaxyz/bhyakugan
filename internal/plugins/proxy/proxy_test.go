@@ -24,24 +24,27 @@ func makeResponse(req *http.Request, status int, body string) *http.Response {
 	}
 }
 
-func TestProxyHeaderBypassReportedAsSingleRootCause(t *testing.T) {
+func TestProxyHeaderBypassAndBehavioralTrust(t *testing.T) {
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			path := req.URL.Path
-			for _, p := range internalPaths {
-				if path == p {
-					// Baseline request without spoofed header should be denied.
-					if req.Header.Get("X-Forwarded-For") == "" &&
-						req.Header.Get("X-Real-IP") == "" &&
-						req.Header.Get("True-Client-IP") == "" &&
-						req.Header.Get("Client-IP") == "" &&
-						req.Header.Get("X-Remote-IP") == "" {
-						return makeResponse(req, http.StatusForbidden, "Forbidden"), nil
-					}
-					return makeResponse(req, http.StatusOK, "<html><body><h1>admin dashboard root config</h1></body></html>"), nil
+			
+			// Scenario 1: Bypass for /admin
+			if path == "/admin" {
+				if req.Header.Get("X-Forwarded-For") == "127.0.0.1" {
+					return makeResponse(req, http.StatusOK, "<html><body><h1>admin dashboard</h1></body></html>"), nil
 				}
+				return makeResponse(req, http.StatusForbidden, "Forbidden"), nil
 			}
-			// Keep auxiliary checks quiet for this test.
+
+			// Scenario 2: Behavioral Trust for root
+			if path == "/" || path == "" {
+				if req.Header.Get("X-Forwarded-Host") == "internal-restricted.local" {
+					return makeResponse(req, http.StatusOK, "Custom Host Response"), nil
+				}
+				return makeResponse(req, http.StatusOK, "Normal Response"), nil
+			}
+
 			return makeResponse(req, http.StatusNotFound, "Not Found"), nil
 		}),
 	}
@@ -51,17 +54,22 @@ func TestProxyHeaderBypassReportedAsSingleRootCause(t *testing.T) {
 		findings = append(findings, f)
 	})
 
-	if len(findings) != 1 {
-		t.Fatalf("expected one root-cause finding, got %d", len(findings))
+	hasBypass := false
+	hasBehavioral := false
+
+	for _, f := range findings {
+		if f.Type == "Improper Trust in HTTP Headers (Proxy Bypass)" {
+			hasBypass = true
+		}
+		if f.Type == "Improper Trust in HTTP Headers (Behavioral)" {
+			hasBehavioral = true
+		}
 	}
-	f := findings[0]
-	if f.Type != "Improper Trust in HTTP Headers (Proxy Bypass)" {
-		t.Fatalf("unexpected finding type: %q", f.Type)
+
+	if !hasBypass {
+		t.Fatal("expected Proxy Bypass finding for /admin")
 	}
-	if !strings.Contains(f.Detail, "Vectors tested:") {
-		t.Fatal("expected vector count in detail")
-	}
-	if !strings.Contains(f.Detail, "Confirmed bypass: yes") {
-		t.Fatal("expected confirmed bypass summary in detail")
+	if !hasBehavioral {
+		t.Fatal("expected Behavioral Trust finding for root")
 	}
 }

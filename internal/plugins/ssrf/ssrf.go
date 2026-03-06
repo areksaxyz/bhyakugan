@@ -109,7 +109,10 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					return
 				}
 
-				req, _ := http.NewRequest("GET", target, nil)
+				req, err := http.NewRequest("GET", target, nil)
+				if err != nil {
+					return
+				}
 				utils.SetDefaultHeaders(req, target)
 				resp, err := client.Do(req)
 				if err != nil {
@@ -165,7 +168,10 @@ func buildSSRFURL(baseURL string, testParams map[string]string, targetParam, pay
 }
 
 func fetchBodyLower(client *http.Client, target string) string {
-	req, _ := http.NewRequest("GET", target, nil)
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return ""
+	}
 	utils.SetDefaultHeaders(req, target)
 	resp, err := client.Do(req)
 	if err != nil {

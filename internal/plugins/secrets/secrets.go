@@ -97,7 +97,8 @@ var Patterns = []SecretPattern{
 	},
 	{
 		Name:      "AWS Secret Access Key",
-		Pattern:   regexp.MustCompile(`\b[0-9a-zA-Z/+=]{40}\b`),
+		// Requiring a prefix or common assignment context to avoid entropy-only false positives
+		Pattern:   regexp.MustCompile(`(?i)(?:aws_secret|aws_secret_access_key|secret_key|secret_access_key).{0,20}\b([0-9a-zA-Z/+=]{40})\b`),
 		Severity:  "Info",
 		Validator: nil,
 	},
@@ -291,7 +292,7 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 			// Special handling for AWS Secret Access Key: Entropy check and Context Validation
 			if p.Name == "AWS Secret Access Key" {
 				entropy := utils.CalculateShannonEntropy(cleanKey)
-				if entropy < 3.7 { // Slightly higher threshold for solo keys
+				if entropy < 4.3 { // Stricter threshold for solo keys to avoid JS noise
 					continue
 				}
 

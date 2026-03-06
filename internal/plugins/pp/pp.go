@@ -150,17 +150,22 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 			// Control: Use 'false' instead of 'true'
 			controlTarget := strings.Replace(target, "true", "false", 1)
-			controlReq, _ = http.NewRequest("GET", controlTarget, nil)
+			controlReq, err = http.NewRequest("GET", controlTarget, nil)
 		} else if p.Method == "POST" && p.IsJSON {
 			req, err = http.NewRequest("POST", target, bytes.NewBuffer([]byte(p.Payload)))
+			if err != nil {
+				continue
+			}
 			req.Header.Set("Content-Type", "application/json")
 
 			// Control: Use safe payload
 			safePayload := strings.Replace(p.Payload, "510", "200", 1)      // For status check
 			safePayload = strings.Replace(safePayload, "10", "0", 1)        // For spaces check
 			safePayload = strings.Replace(safePayload, "true", "false", -1) // For boolean checks
-			controlReq, _ = http.NewRequest("POST", baseURL, bytes.NewBuffer([]byte(safePayload)))
-			controlReq.Header.Set("Content-Type", "application/json")
+			controlReq, err = http.NewRequest("POST", baseURL, bytes.NewBuffer([]byte(safePayload)))
+			if err == nil {
+				controlReq.Header.Set("Content-Type", "application/json")
+			}
 		}
 
 		if err != nil {

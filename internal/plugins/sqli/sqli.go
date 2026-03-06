@@ -199,6 +199,52 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 	}
 	wg.Wait()
 	ScanOracleLengthFilter(baseURL, client, onFound)
+	ScanBooleanBlind(baseURL, client, onFound)
+}
+
+func ScanBooleanBlind(baseURL string, client *http.Client, onFound func(core.Finding)) {
+	u, err := url.Parse(baseURL)
+	if err != nil || len(u.Query()) == 0 {
+		return
+	}
+
+	ve := core.NewVerificationEngine(client)
+
+	// Payloads for Boolean Blind
+	// We use both numeric and string-based to increase coverage
+	booleanPairs := []struct {
+		truePayload  string
+		falsePayload string
+		name         string
+	}{
+		{" AND 1=1", " AND 1=2", "Numeric Boolean Blind"},
+		{"' AND '1'='1", "' AND '1'='2", "String Boolean Blind (Single Quote)"},
+		{"\" AND \"1\"=\"1", "\" AND \"1\"=\"2", "String Boolean Blind (Double Quote)"},
+		{") AND (1=1", ") AND (1=2", "Parenthesis Boolean Blind"},
+	}
+
+	q := u.Query()
+	for param := range q {
+		originalVal := q.Get(param)
+
+		for _, pair := range booleanPairs {
+			trueP := originalVal + pair.truePayload
+			falseP := originalVal + pair.falsePayload
+
+			res := ve.Verify(baseURL, param, trueP, falseP)
+
+			if res.IsConfirmed {
+				onFound(core.Finding{
+					Type:       "SQL Injection (Boolean-Based)",
+					Target:     baseURL,
+					Detail:     fmt.Sprintf("Confirmed %s in param '%s'. %s (%s)", pair.name, param, res.Detail, res.Evidence),
+					Severity:   "High",
+					Confidence: res.Confidence,
+				})
+				return // Found for this URL
+			}
+		}
+	}
 }
 
 func checkTarget(target string, payload SQLiPayload, client *http.Client, baseline timingBaseline, baselineBodyLower string, isAlreadyVulnerable *bool, foundMu *sync.Mutex, onFound func(core.Finding)) {

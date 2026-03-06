@@ -24,7 +24,7 @@ var SSTIPayloads = []SSTIPayload{
 	{"SSTI Jinja2/Twig (String Mult)", "{{'7'*7}}", "7777777"},
 	{"SSTI Smarty", "{13377331*2}", "26754662"},
 	{"SSTI Freemarker", "${13377331*2}", "26754662"},
-	{"SSTI Freemarker (Alt)", "${131*7}", "917"},
+	{"SSTI Freemarker (Alt)", "${99998*8}", "799984"},
 	{"SSTI Ruby ERB", "<%= 13377331 * 2 %>", "26754662"},
 	{"SSTI Mako", "${13377331*2}", "26754662"},
 	{"SSTI Velocity", "#set($x=13377331*2)$x", "26754662"},
@@ -37,8 +37,8 @@ func deriveExpectedFromPayload(payload string) (string, bool) {
 		return "26754662", true
 	case strings.Contains(p, "'7'*7"):
 		return "7777777", true
-	case strings.Contains(p, "131*7"):
-		return "917", true
+	case strings.Contains(p, "99998*8"):
+		return "799984", true
 	default:
 		return "", false
 	}
@@ -102,13 +102,15 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		baseQ.Set(targetParam, "bhyakugan_ssti_control")
 		baseU.RawQuery = baseQ.Encode()
 		baseTarget := baseU.String()
-		baseReq, _ := http.NewRequest("GET", baseTarget, nil)
-		utils.SetDefaultHeaders(baseReq, baseTarget)
-		baseResp, baseErr := client.Do(baseReq)
-		if baseErr == nil {
-			baseBodyBytes, _ := io.ReadAll(baseResp.Body)
-			baseResp.Body.Close()
-			baseBodies[targetParam] = string(baseBodyBytes)
+		baseReq, errBaseReq := http.NewRequest("GET", baseTarget, nil)
+		if errBaseReq == nil {
+			utils.SetDefaultHeaders(baseReq, baseTarget)
+			baseResp, baseErr := client.Do(baseReq)
+			if baseErr == nil {
+				baseBodyBytes, _ := io.ReadAll(baseResp.Body)
+				baseResp.Body.Close()
+				baseBodies[targetParam] = string(baseBodyBytes)
+			}
 		}
 	}
 
@@ -123,7 +125,10 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			fuzzU.RawQuery = fuzzQ.Encode()
 			target := fuzzU.String()
 
-			req, _ := http.NewRequest("GET", target, nil)
+			req, err := http.NewRequest("GET", target, nil)
+			if err != nil {
+				continue
+			}
 			utils.SetDefaultHeaders(req, target)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -140,14 +145,58 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			if strings.Contains(bodyStr, p.Check) &&
 				!strings.Contains(bodyStr, p.Payload) &&
 				(baseBodies[targetParam] == "" || !strings.Contains(baseBodies[targetParam], p.Check)) {
-				onFound(core.Finding{
-					Type:       "Server-Side Template Injection",
-					Target:     target,
-					Detail:     fmt.Sprintf("%s confirmed. Found output '%s' in param '%s'", p.Name, p.Check, targetParam),
-					Severity:   "Critical",
-					Confidence: "confirmed",
-				})
-				return // Found one, move to next host
+				
+				// --- AUTO EXPLOIT VERIFICATION (New Upgrade via VerificationEngine) ---
+				ve := core.NewVerificationEngine(client)
+				
+				// Define a "False" payload that should NOT be evaluated or should result in a different value
+				// For SSTI, we can use a different arithmetic or just a string that won't match the check.
+				verifyPayload := strings.ReplaceAll(p.Payload, "13377331*2", "13377331+7")
+				verifyCheck := "13377338"
+				if strings.Contains(p.Payload, "131*7") {
+					verifyPayload = strings.ReplaceAll(p.Payload, "131*7", "131+7")
+					verifyCheck = "138"
+				} else if strings.Contains(p.Payload, "'7'*7") {
+					verifyPayload = strings.ReplaceAll(p.Payload, "'7'*7", "'8'*2")
+					verifyCheck = "88"
+				}
+
+				// We use Verify to check if the response changes between two different valid payloads
+				// or we can just use the internal logic since SSTI is content-based not just length-based.
+				// However, to follow the requested flow:
+				res := ve.Verify(baseURL, targetParam, p.Payload, "bhyakugan_ssti_false_control")
+
+				if res.IsConfirmed {
+					// Extra content check for SSTI specifically
+					vFuzzU, _ := url.Parse(baseURL)
+					vFuzzQ := vFuzzU.Query()
+					for k, v := range testParams {
+						vFuzzQ.Set(k, v)
+					}
+					vFuzzQ.Set(targetParam, verifyPayload)
+					vFuzzU.RawQuery = vFuzzQ.Encode()
+					vTarget := vFuzzU.String()
+
+					vReq, _ := http.NewRequest("GET", vTarget, nil)
+					utils.SetDefaultHeaders(vReq, vTarget)
+					vResp, vErr := client.Do(vReq)
+					if vErr == nil {
+						vBodyBytes, _ := io.ReadAll(vResp.Body)
+						vResp.Body.Close()
+						vBodyStr := string(vBodyBytes)
+
+						if strings.Contains(vBodyStr, verifyCheck) && !strings.Contains(vBodyStr, verifyPayload) {
+							onFound(core.Finding{
+								Type:       "Server-Side Template Injection",
+								Target:     target,
+								Detail:     fmt.Sprintf("%s confirmed via VerificationEngine and double arithmetic check. %s", p.Name, res.Detail),
+								Severity:   "Critical",
+								Confidence: "confirmed",
+							})
+							return
+						}
+					}
+				}
 			}
 		}
 	}

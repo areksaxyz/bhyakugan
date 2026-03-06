@@ -43,7 +43,10 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 		controlURL += "?bhyakugan_control=true"
 	}
 
-	reqBase, _ := http.NewRequest("GET", controlURL, nil)
+	reqBase, errReqBase := http.NewRequest("GET", controlURL, nil)
+	if errReqBase != nil {
+		return
+	}
 	utils.SetDefaultHeaders(reqBase, controlURL)
 	baseResp, _ := client.Do(reqBase)
 	
@@ -86,7 +89,8 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 			fuzzU.RawQuery = fuzzQ.Encode()
 			target := fuzzU.String()
 			
-			req, _ := http.NewRequest("GET", target, nil)
+			req, err := http.NewRequest("GET", target, nil)
+			if err != nil { continue }
 			utils.SetDefaultHeaders(req, target)
 			resp, err := client.Do(req)
 			if err != nil { continue }

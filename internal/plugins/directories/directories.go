@@ -82,7 +82,7 @@ var CommonPaths = []DirCheck{
 	{"package-lock.json", "\"lockfileVersion\""},
 	{".npmrc", "_auth"},
 	{"composer.json", "\"require\":"},
-	{"composer.lock", ""},
+	{"composer.lock", "\"content-hash\":"},
 	{"Dockerfile", "FROM "},
 	{"docker-compose.yml", "services:"},
 	{".docker/config.json", "auths"},
@@ -99,15 +99,32 @@ var CommonPaths = []DirCheck{
 	{"deleteUser", ""},
 }
 
+func isLikelyComposerLock(body string) bool {
+	return strings.Contains(body, "\"content-hash\":") && 
+		strings.Contains(body, "\"packages\":") && 
+		strings.Contains(body, "\"name\":")
+}
+
+func isLikelyPackageLock(body string) bool {
+	return strings.Contains(body, "\"lockfileVersion\":") && 
+		strings.Contains(body, "\"dependencies\":")
+}
+
 func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if baseURL[len(baseURL)-1] != '/' {
 		baseURL += "/"
 	}
 
 	randPath := baseURL + "bhyakugan_baseline_test_404_" + fmt.Sprintf("%d", 123456)
-	req404, _ := http.NewRequest("GET", randPath, nil)
-	utils.SetDefaultHeaders(req404, randPath)
-	resp404, err404 := client.Do(req404)
+	req404, errReq404 := http.NewRequest("GET", randPath, nil)
+	var resp404 *http.Response
+	var err404 error
+	if errReq404 == nil {
+		utils.SetDefaultHeaders(req404, randPath)
+		resp404, err404 = client.Do(req404)
+	} else {
+		err404 = errReq404
+	}
 
 	var baselineLen int
 	var baselineBody string
@@ -183,6 +200,14 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				hasSecret := hasStrongSecretEvidence(bodyLower)
 
 				// --- ADVANCED ANTI-FP LOGIC ---
+
+				// composer.lock/package-lock verification
+				if strings.HasSuffix(pathLower, "composer.lock") && !isLikelyComposerLock(bodyStr) {
+					return
+				}
+				if strings.HasSuffix(pathLower, "package-lock.json") && !isLikelyPackageLock(bodyStr) {
+					return
+				}
 
 				// Rule A: Binary/Archives MUST NOT be HTML
 				archiveExtensions := []string{".zip", ".7z", ".tar.gz", ".rar", ".sql", ".pdf", ".xlsx", ".csv"}
@@ -264,6 +289,19 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					} else if strings.Contains(pathLower, "logs") || strings.Contains(pathLower, ".log") {
 						severity = "Medium"
 						findingType = "Log File Exposed"
+					}
+
+					if strings.HasSuffix(pathLower, "composer.lock") && isLikelyComposerLock(bodyStr) {
+						severity = "Medium"
+						findingType = "Sensitive Dependency Lock Exposed"
+						confidence = "confirmed"
+						detail = "Verified PHP Composer lock file. Exposes full dependency tree and versions."
+					}
+					if strings.HasSuffix(pathLower, "package-lock.json") && isLikelyPackageLock(bodyStr) {
+						severity = "Medium"
+						findingType = "Sensitive Dependency Lock Exposed"
+						confidence = "confirmed"
+						detail = "Verified Node.js package-lock file. Exposes full dependency tree and versions."
 					}
 
 					// 2. Content-aware upgrade (requires evidence, not path name)

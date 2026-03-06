@@ -104,12 +104,14 @@ func ScanLFI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	var highestSeverity string = "Medium"
 	var mu sync.Mutex
 	baselineBody := ""
-	bReq, _ := http.NewRequest("GET", baseURL, nil)
-	utils.SetDefaultHeaders(bReq, baseURL)
-	if bResp, bErr := client.Do(bReq); bErr == nil {
-		bBody, _ := io.ReadAll(bResp.Body)
-		bResp.Body.Close()
-		baselineBody = strings.ToLower(string(bBody))
+	bReq, errBReq := http.NewRequest("GET", baseURL, nil)
+	if errBReq == nil {
+		utils.SetDefaultHeaders(bReq, baseURL)
+		if bResp, bErr := client.Do(bReq); bErr == nil {
+			bBody, _ := io.ReadAll(bResp.Body)
+			bResp.Body.Close()
+			baselineBody = strings.ToLower(string(bBody))
+		}
 	}
 
 	// Parse URL to identify parameters for fuzzing

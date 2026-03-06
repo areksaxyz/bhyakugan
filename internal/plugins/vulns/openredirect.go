@@ -44,7 +44,10 @@ func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Fin
 					continue
 				}
 
-				req, _ := http.NewRequest("GET", target, nil)
+				req, err := http.NewRequest("GET", target, nil)
+				if err != nil {
+					continue
+				}
 				utils.SetDefaultHeaders(req, target)
 				
 				resp, err := noRedirectClient.Do(req)

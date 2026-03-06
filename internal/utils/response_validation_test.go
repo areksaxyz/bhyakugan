@@ -8,7 +8,10 @@ import (
 )
 
 func makeResponse(status int, location, body string) *http.Response {
-	req, _ := http.NewRequest(http.MethodGet, "https://example.com/app", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/app", nil)
+	if err != nil {
+		panic(err)
+	}
 	resp := &http.Response{
 		StatusCode: status,
 		Header:     make(http.Header),

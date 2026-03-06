@@ -15,6 +15,7 @@ import (
 	"github.com/yupiyy/bhyakugan/internal/plugins/directories"
 	"github.com/yupiyy/bhyakugan/internal/plugins/git"
 	"github.com/yupiyy/bhyakugan/internal/plugins/graphql"
+	"github.com/yupiyy/bhyakugan/internal/plugins/idor"
 	"github.com/yupiyy/bhyakugan/internal/plugins/jsanalyzer"
 	"github.com/yupiyy/bhyakugan/internal/plugins/jwt"
 	"github.com/yupiyy/bhyakugan/internal/plugins/nosqli"
@@ -22,6 +23,7 @@ import (
 	"github.com/yupiyy/bhyakugan/internal/plugins/pp"
 	"github.com/yupiyy/bhyakugan/internal/plugins/proxy"
 	"github.com/yupiyy/bhyakugan/internal/plugins/rce"
+	"github.com/yupiyy/bhyakugan/internal/plugins/recon_html"
 	"github.com/yupiyy/bhyakugan/internal/plugins/saml"
 	"github.com/yupiyy/bhyakugan/internal/plugins/secrets"
 	"github.com/yupiyy/bhyakugan/internal/plugins/sqli"
@@ -56,7 +58,11 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 
 	// SMART RETRY LOGIC (Max 3 attempts)
 	for i := 0; i < 3; i++ {
-		req, _ := http.NewRequest("GET", urlStr, nil)
+		req, errReq := http.NewRequest("GET", urlStr, nil)
+		if errReq != nil {
+			err = errReq
+			continue
+		}
 		utils.SetDefaultHeaders(req, urlStr)
 		resp, err = client.Do(req)
 		if err == nil {
@@ -164,17 +170,24 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	}
 	baselineURL += "bhyakugan_baseline_test_404"
 
-	reqM, _ := http.NewRequest("GET", opts.Target, nil)
-	utils.SetDefaultHeaders(reqM, opts.Target)
-	respM, errM := client.Do(reqM)
+	reqM, errReqM := http.NewRequest("GET", opts.Target, nil)
+	var respM *http.Response
+	var errM error
+	if errReqM == nil {
+		utils.SetDefaultHeaders(reqM, opts.Target)
+		respM, errM = client.Do(reqM)
+	} else {
+		errM = errReqM
+	}
 
 	var mainBody string
 	var mainHeaders http.Header
-	if errM == nil {
+	if errM == nil && respM != nil {
 		bodyM, _ := io.ReadAll(respM.Body)
 		mainBody = string(bodyM)
 		mainHeaders = respM.Header
 		respM.Body.Close()
+		recon_html.Scan(opts.Target, mainBody, wrappedReportFinding)
 	}
 
 	var wg sync.WaitGroup
@@ -229,6 +242,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			runP(func() { sqli.Scan(url, client, ctx, wrappedReportFinding) })
 			runP(func() { ssrf.Scan(url, client, wrappedReportFinding) })
 			runP(func() { ssti.Scan(url, client, wrappedReportFinding) })
+			runP(func() { idor.Scan(url, client, wrappedReportFinding) })
 			runP(func() { xpath.Scan(url, client, wrappedReportFinding) })
 			runP(func() { xslt.Scan(url, client, wrappedReportFinding) })
 			runP(func() { pp.Scan(url, client, wrappedReportFinding) })
@@ -317,13 +331,18 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						extractWg.Add(1)
 						go func() {
 							defer extractWg.Done()
-							req, _ := http.NewRequest("GET", current.URL, nil)
+							req, err := http.NewRequest("GET", current.URL, nil)
+							if err != nil {
+								return
+							}
 							utils.SetDefaultHeaders(req, current.URL)
 							resp, err := client.Do(req)
 							if err == nil {
 								body, _ := io.ReadAll(resp.Body)
+								bodyStr := string(body)
 								resp.Body.Close()
-								links := crawler.ExtractLinks(current.URL, string(body))
+								recon_html.Scan(current.URL, bodyStr, wrappedReportFinding)
+								links := crawler.ExtractLinks(current.URL, bodyStr)
 								linksMu.Lock()
 								extractedLinks = append(extractedLinks, links...)
 								linksMu.Unlock()
@@ -334,13 +353,18 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						go func() {
 							defer extractWg.Done()
 							mobileUA := "Mozilla/5.0 (iPhone; CPU iPhone OS 15_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1"
-							reqMobile, _ := http.NewRequest("GET", current.URL, nil)
+							reqMobile, err := http.NewRequest("GET", current.URL, nil)
+							if err != nil {
+								return
+							}
 							reqMobile.Header.Set("User-Agent", mobileUA)
 							respMobile, errMobile := client.Do(reqMobile)
 							if errMobile == nil {
 								bodyMobile, _ := io.ReadAll(respMobile.Body)
+								bodyMobileStr := string(bodyMobile)
 								respMobile.Body.Close()
-								mLinks := crawler.ExtractLinks(current.URL, string(bodyMobile))
+								recon_html.Scan(current.URL, bodyMobileStr, wrappedReportFinding)
+								mLinks := crawler.ExtractLinks(current.URL, bodyMobileStr)
 								linksMu.Lock()
 								extractedLinks = append(extractedLinks, mLinks...)
 								linksMu.Unlock()

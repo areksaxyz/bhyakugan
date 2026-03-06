@@ -83,7 +83,10 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 		if err != nil {
 			continue
 		}
-		req, _ := http.NewRequest("GET", baseTarget, nil)
+		req, err := http.NewRequest("GET", baseTarget, nil)
+		if err != nil {
+			continue
+		}
 		utils.SetDefaultHeaders(req, baseTarget)
 		resp, err := client.Do(req)
 		if err != nil {

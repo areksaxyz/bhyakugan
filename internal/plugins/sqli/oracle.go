@@ -165,7 +165,7 @@ Reason: %s`,
 func getRespLen(r *http.Response) int {
 	defer r.Body.Close()
 	b, _ := io.ReadAll(r.Body)
-	return len(b)
+	return len(utils.NormalizeBody(string(b)))
 }
 
 func isSimilarLengthStrict(a, b int) bool {

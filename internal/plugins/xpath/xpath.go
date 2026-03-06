@@ -273,19 +273,32 @@ func containsDeterministicXPathEvidence(reps []xpathEvidence) bool {
 
 func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBaseline, probes map[string]xpathProbe, client *http.Client) []xpathEvidence {
 	out := make([]xpathEvidence, 0, 2)
+	ve := core.NewVerificationEngine(client)
 
 	if t, ok := probes["XPath Boolean TRUE"]; ok {
-		if f, okFalse := probes["XPath Boolean FALSE"]; okFalse {
-			if signal, okDiff := detectDeterministicDifferential(base, t, f, "boolean"); okDiff {
+		if _, okFalse := probes["XPath Boolean FALSE"]; okFalse {
+			// Find original payload from XPathPayloads map
+			var tPayload, fPayload string
+			for _, p := range XPathPayloads {
+				if p.Name == "XPath Boolean TRUE" {
+					tPayload = p.Payload
+				}
+				if p.Name == "XPath Boolean FALSE" {
+					fPayload = p.Payload
+				}
+			}
+
+			res := ve.Verify(baseURL, param, tPayload, fPayload)
+			if res.IsConfirmed {
 				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Boolean Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        signal + exploitResults,
+					signal:        res.Detail + exploitResults,
 					severity:      "High",
-					confidence:    "confirmed",
+					confidence:    res.Confidence,
 					deterministic: true,
 					baseHash:      shortHash(base.bodyHash),
 					attackHash:    shortHash(t.bodyHash),
@@ -295,17 +308,28 @@ func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBa
 	}
 
 	if t, ok := probes["XPath Count TRUE"]; ok {
-		if f, okFalse := probes["XPath Count FALSE"]; okFalse {
-			if signal, okDiff := detectDeterministicDifferential(base, t, f, "count"); okDiff {
+		if _, okFalse := probes["XPath Count FALSE"]; okFalse {
+			var tPayload, fPayload string
+			for _, p := range XPathPayloads {
+				if p.Name == "XPath Count TRUE" {
+					tPayload = p.Payload
+				}
+				if p.Name == "XPath Count FALSE" {
+					fPayload = p.Payload
+				}
+			}
+
+			res := ve.Verify(baseURL, param, tPayload, fPayload)
+			if res.IsConfirmed {
 				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Count Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        signal + exploitResults,
+					signal:        res.Detail + exploitResults,
 					severity:      "High",
-					confidence:    "confirmed",
+					confidence:    res.Confidence,
 					deterministic: true,
 					baseHash:      shortHash(base.bodyHash),
 					attackHash:    shortHash(t.bodyHash),
@@ -318,36 +342,8 @@ func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBa
 }
 
 func detectDeterministicDifferential(base xpathBaseline, trueProbe, falseProbe xpathProbe, mode string) (string, bool) {
-	// Ignore auth-gated or identical redirect/login behavior.
-	if utils.IsRedirectAwareIdentical(trueProbe.fp, falseProbe.fp) {
-		return "", false
-	}
-
-	// Normalize bodies for final differential confirmation to avoid dynamic noise
-	normTrue := utils.NormalizeBody(trueProbe.bodyLower)
-	normFalse := utils.NormalizeBody(falseProbe.bodyLower)
-	normBase := utils.NormalizeBody(base.bodyLower)
-
-	trueHash := hashBytes([]byte(normTrue))
-	falseHash := hashBytes([]byte(normFalse))
-	baseHash := hashBytes([]byte(normBase))
-
-	trueDiffersFromBase := trueProbe.status != base.status || trueHash != baseHash || !utils.IsRedirectAwareIdentical(base.fingerprint, trueProbe.fp)
-	falseMatchesBase := falseHash == baseHash || utils.IsRedirectAwareIdentical(base.fingerprint, falseProbe.fp)
-	trueFalseDifferent := trueProbe.status != falseProbe.status || trueHash != falseHash
-
-	if !trueDiffersFromBase || !falseMatchesBase || !trueFalseDifferent {
-		return "", false
-	}
-
-	switch mode {
-	case "boolean":
-		return fmt.Sprintf("Boolean true/false differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueHash), falseProbe.status, shortHash(falseHash)), true
-	case "count":
-		return fmt.Sprintf("count() differential confirmed (TRUE=%d/%s FALSE=%d/%s)", trueProbe.status, shortHash(trueHash), falseProbe.status, shortHash(falseHash)), true
-	default:
-		return "Deterministic differential confirmed", true
-	}
+	// This function is now legacy, using analyzeDeterministicPairEvidence with VerificationEngine instead.
+	return "", false
 }
 
 func detectStructuralXMLLeak(baseBody, attackBody string) (string, bool) {

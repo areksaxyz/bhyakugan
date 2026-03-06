@@ -24,7 +24,7 @@ var (
 	sensitiveFiles = regexp.MustCompile(`"([a-zA-Z0-9_/.-]+\.(?:sql|env|bak|config|xml|json|pem|key))"`)
 
 	// XSSI / Sensitive Tokens
-	tokenLeak = regexp.MustCompile(`(?i)(?:csrf|sessionid|auth_token|access_token|refresh_token|api_key|secret_key|password|passwd|credentials)["']?\s*[:=]\s*["']([^"'\s]{8,})["']`)
+	tokenLeak = regexp.MustCompile(`(?i)(?:csrf|sessionid|phpsessid|jsessionid|aspsessionid|connect\.sid|sid|auth_token|access_token|refresh_token|api_key|secret_key|password|passwd|credentials)["']?\s*[:=]\s*["']([^"'\s]{8,})["']`)
 
 	// Client-Side Token Generation (New: Yousef Elsheikh Report)
 	cryptoJSLeak   = regexp.MustCompile(`CryptoJS\.(?:HmacSHA256|HmacSHA1|HmacMD5|AES\.encrypt)\s*\(`)
@@ -61,11 +61,12 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 
 	// 0. Check for Sourcemaps (.map)
 	mapURL := jsURL + ".map"
-	reqMap, _ := http.NewRequest("GET", mapURL, nil)
-	utils.SetDefaultHeaders(reqMap, mapURL)
-	respMap, errMap := client.Do(reqMap)
-	if errMap == nil {
-		if respMap.StatusCode == 200 {
+	reqMap, errReqMap := http.NewRequest("GET", mapURL, nil)
+	if errReqMap == nil {
+		utils.SetDefaultHeaders(reqMap, mapURL)
+		respMap, errMap := client.Do(reqMap)
+		if errMap == nil {
+			if respMap.StatusCode == 200 {
 			severity := "Low"
 			isLibrary := strings.Contains(jsURL, "jquery") || 
 						 strings.Contains(jsURL, "bootstrap") || 
@@ -91,6 +92,7 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 			})
 		}
 		respMap.Body.Close()
+	}
 	}
 
 	// 1. Use centralized secrets detector
@@ -152,7 +154,10 @@ func checkSecretConstants(content, source string, onFound func(core.Finding)) {
 
 func checkXSSI(jsURL string, client *http.Client, onFound func(core.Finding)) {
 	// 1. Request with standard client (might have cookies if set in previous requests)
-	req1, _ := http.NewRequest("GET", jsURL, nil)
+	req1, err := http.NewRequest("GET", jsURL, nil)
+	if err != nil {
+		return
+	}
 	utils.SetDefaultHeaders(req1, jsURL)
 	resp1, err1 := client.Do(req1)
 	if err1 != nil {
@@ -162,7 +167,10 @@ func checkXSSI(jsURL string, client *http.Client, onFound func(core.Finding)) {
 	body1, _ := io.ReadAll(resp1.Body)
 
 	// 2. Request WITHOUT cookies (anonymous)
-	req2, _ := http.NewRequest("GET", jsURL, nil)
+	req2, err := http.NewRequest("GET", jsURL, nil)
+	if err != nil {
+		return
+	}
 	utils.SetDefaultHeaders(req2, jsURL)
 
 	// Create a temporary client with NO cookie jar for this request

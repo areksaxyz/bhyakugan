@@ -122,10 +122,17 @@ func checkNoneAlgorithm(originalToken, url string, client *http.Client, onFound 
 	// 1. Get Baseline (No Token)
 	// We need to know what the server returns when NO token is present.
 	// If it returns 200 OK (public page), sending a "None" token and getting 200 OK proves nothing.
-	reqBase, _ := http.NewRequest("GET", url, nil)
-	respBase, errBase := client.Do(reqBase)
+	reqBase, errReqBase := http.NewRequest("GET", url, nil)
+	var respBase *http.Response
+	var errBase error
+	if errReqBase == nil {
+		respBase, errBase = client.Do(reqBase)
+	} else {
+		errBase = errReqBase
+	}
+
 	baseBody := ""
-	if errBase == nil {
+	if errBase == nil && respBase != nil {
 		defer respBase.Body.Close()
 		b, _ := io.ReadAll(respBase.Body)
 		baseBody = string(b)
@@ -141,7 +148,10 @@ func checkNoneAlgorithm(originalToken, url string, client *http.Client, onFound 
 		// Token without signature (Header.Payload.)
 		noneToken := noneHeader + "." + parts[1] + "."
 
-		req, _ := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
 		req.Header.Set("Authorization", "Bearer " + noneToken)
 		
 		resp, err := client.Do(req)

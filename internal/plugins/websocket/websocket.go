@@ -41,7 +41,10 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 func checkHandshake(target string, client *http.Client, onFound func(core.Finding)) {
 	// 1. Try a standard WebSocket Handshake
-	req, _ := http.NewRequest("GET", target, nil)
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return
+	}
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")

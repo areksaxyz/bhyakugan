@@ -72,34 +72,86 @@ func Scan(domain string, client *http.Client, wg *sync.WaitGroup, onFound func(c
 }
 
 func checkBucket(bucketName string, client *http.Client, onFound func(core.Finding)) {
-	url := fmt.Sprintf("http://%s.s3.amazonaws.com", bucketName)
-	resp, err := client.Get(url)
-	if err != nil {
-		return
+	urls := []string{
+		fmt.Sprintf("http://%s.s3.amazonaws.com", bucketName),
+		fmt.Sprintf("http://storage.googleapis.com/%s", bucketName),
+		fmt.Sprintf("http://%s.blob.core.windows.net/public?restype=container&comp=list", bucketName),
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
+	sensitiveFiles := []string{"backup.sql", "users.json", "config.json", ".env", "database.yml"}
+
+	for _, u := range urls {
+		resp, err := client.Get(u)
+		if err != nil {
+			continue
+		}
+		
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		bodyStr := string(body)
-		if strings.Contains(bodyStr, "<ListBucketResult>") {
-			// --- SCOPE VERIFICATION ---
-			// Check if the bucket content mentions the target brand to reduce out-of-scope noise
-			targetBrand := strings.Split(url, ".")[0] 
-			if strings.Contains(strings.ToLower(bodyStr), strings.ToLower(targetBrand)) {
-				fmt.Printf("[!] POSITIVE MATCH: Public S3 Bucket (Verified Owner): %s\n", url)
+
+		isPublic := false
+		if resp.StatusCode == 200 {
+			if strings.Contains(u, "amazonaws.com") && strings.Contains(bodyStr, "<ListBucketResult>") {
+				isPublic = true
+			} else if strings.Contains(u, "googleapis.com") && (strings.Contains(bodyStr, "<?xml") || strings.Contains(bodyStr, "ListBucketResult")) {
+				isPublic = true
+			} else if strings.Contains(u, "blob.core.windows.net") && strings.Contains(bodyStr, "EnumerationResults") {
+				isPublic = true
+			}
+		}
+
+		if isPublic {
+			targetBrand := bucketName
+			parts := strings.Split(bucketName, "-")
+			if len(parts) > 0 {
+				targetBrand = parts[0]
+			}
+			
+			detail := "Public listable bucket confirmed."
+			severity := "High"
+
+			// Check for sensitive files
+			var foundFiles []string
+			baseURL := u
+			if strings.Contains(baseURL, "?") {
+				baseURL = strings.Split(baseURL, "?")[0] // Remove query params for direct file access
+			}
+
+			for _, f := range sensitiveFiles {
+				fileUrl := baseURL + "/" + f
+				
+				fResp, fErr := client.Get(fileUrl)
+				if fErr == nil {
+					fBody, _ := io.ReadAll(fResp.Body)
+					fResp.Body.Close()
+					if fResp.StatusCode == 200 && len(fBody) > 0 {
+						bodyLower := strings.ToLower(string(fBody))
+						if !strings.Contains(bodyLower, "<nosuchkey>") && !strings.Contains(bodyLower, "<error>") {
+							foundFiles = append(foundFiles, f)
+						}
+					}
+				}
+			}
+
+			if len(foundFiles) > 0 {
+				severity = "Critical"
+				detail += fmt.Sprintf(" Sensitive files found: %s.", strings.Join(foundFiles, ", "))
+			}
+
+			// Report if ownership is clear or if sensitive files were actually found (overriding ownership doubt)
+			if strings.Contains(strings.ToLower(bodyStr), strings.ToLower(targetBrand)) || severity == "Critical" {
+				fmt.Printf("[!] POSITIVE MATCH: Public Cloud Storage: %s [%s]\n", u, severity)
 				onFound(core.Finding{
-					Type:       "S3 Bucket",
-					Target:     url,
-					Detail:     "Public listable bucket confirmed and ownership signal matches target brand.",
-					Severity:   "High",
+					Type:       "Cloud Storage Exposure",
+					Target:     baseURL,
+					Detail:     detail,
+					Severity:   severity,
 					Confidence: "confirmed",
 				})
 			} else {
-				// Ownership unclear => drop to avoid false-positive reporting.
-				fmt.Printf("[*] Skipping S3 bucket with unclear ownership: %s\n", url)
+				fmt.Printf("[*] Skipping Cloud Storage bucket with unclear ownership: %s\n", u)
 			}
 		}
 	}
-	// Silent drop 403 or other codes to reduce noise
 }

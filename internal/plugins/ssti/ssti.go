@@ -21,8 +21,10 @@ type SSTIPayload struct {
 // We use very unique large numbers to avoid common numbers appearing in timestamps/IDs
 var SSTIPayloads = []SSTIPayload{
 	{"SSTI Jinja2/Twig", "{{13377331*2}}", "26754662"},
+	{"SSTI Jinja2/Twig (String Mult)", "{{'7'*7}}", "7777777"},
 	{"SSTI Smarty", "{13377331*2}", "26754662"},
 	{"SSTI Freemarker", "${13377331*2}", "26754662"},
+	{"SSTI Freemarker (Alt)", "${131*7}", "917"},
 	{"SSTI Ruby ERB", "<%= 13377331 * 2 %>", "26754662"},
 	{"SSTI Mako", "${13377331*2}", "26754662"},
 	{"SSTI Velocity", "#set($x=13377331*2)$x", "26754662"},
@@ -33,6 +35,10 @@ func deriveExpectedFromPayload(payload string) (string, bool) {
 	switch {
 	case strings.Contains(p, "13377331*2"):
 		return "26754662", true
+	case strings.Contains(p, "'7'*7"):
+		return "7777777", true
+	case strings.Contains(p, "131*7"):
+		return "917", true
 	default:
 		return "", false
 	}

@@ -66,12 +66,28 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 	respMap, errMap := client.Do(reqMap)
 	if errMap == nil {
 		if respMap.StatusCode == 200 {
-			fmt.Printf("[!] FOUND JS Sourcemap: %s\n", mapURL)
+			severity := "Low"
+			isLibrary := strings.Contains(jsURL, "jquery") || 
+						 strings.Contains(jsURL, "bootstrap") || 
+						 strings.Contains(jsURL, "node_modules") ||
+						 strings.Contains(jsURL, "vendor") ||
+						 strings.Contains(jsURL, "waves.min.js") ||
+						 strings.Contains(jsURL, "feather.min.js")
+			
+			if !isLibrary && (strings.Contains(jsURL, "app") || 
+							  strings.Contains(jsURL, "admin") || 
+							  strings.Contains(jsURL, "bundle") || 
+							  strings.Contains(jsURL, "main") ||
+							  strings.Contains(jsURL, "index")) {
+				severity = "Medium"
+			}
+
+			fmt.Printf("[!] FOUND JS Sourcemap: %s [%s]\n", mapURL, severity)
 			onFound(core.Finding{
 				Type:     "Recon: JS Sourcemap",
 				Target:   mapURL,
 				Detail:   "Javascript sourcemap file discovered. Can be used to recover original source code.",
-				Severity: "Low",
+				Severity: severity,
 			})
 		}
 		respMap.Body.Close()
@@ -81,8 +97,8 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 	secrets.DetectInContent(content, jsURL, onFound)
 
 	// 2. Check Endpoints
-	checkRegexGroup(content, apiEndpoint, "Full API Endpoint", jsURL, "Info", onFound)
-	checkRegexGroup(content, apiPath, "API Path", jsURL, "Info", onFound)
+	checkRegexGroupAndProbe(content, apiEndpoint, "Full API Endpoint", jsURL, "Info", client, onFound)
+	checkRegexGroupAndProbe(content, apiPath, "API Path", jsURL, "Info", client, onFound)
 	checkRegexGroup(content, graphQL, "GraphQL-like Endpoint Detected", jsURL, "Info", onFound)
 	checkRegexGroup(content, adminPath, "Admin Path", jsURL, "Info", onFound)
 
@@ -208,5 +224,97 @@ func checkRegexGroup(content string, re *regexp.Regexp, name, source, severity s
 				seen[val] = true
 			}
 		}
+	}
+}
+
+func checkRegexGroupAndProbe(content string, re *regexp.Regexp, name, source, severity string, client *http.Client, onFound func(core.Finding)) {
+	matches := re.FindAllStringSubmatch(content, -1)
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		if len(m) > 1 {
+			val := m[1]
+			if len(val) < 4 || strings.Contains(val, "example.com") || strings.Contains(val, "node_modules") {
+				continue
+			}
+			if !seen[val] {
+				fmt.Printf("[+] [JS-Analyzer] FOUND and PROBING %s in %s: %s\n", name, source, val)
+
+				onFound(core.Finding{
+					Type:     "Recon: JS Endpoint",
+					Target:   source,
+					Detail:   fmt.Sprintf("%s: %s", name, val),
+					Severity: severity,
+				})
+
+				// Probe the endpoint if it looks like an absolute path or full URL
+				targetURL := val
+				if strings.HasPrefix(val, "/") {
+					// We need to resolve the relative path against the source URL
+					parts := strings.Split(source, "/")
+					if len(parts) >= 3 {
+						targetURL = parts[0] + "//" + parts[2] + val
+					}
+				}
+
+				if strings.HasPrefix(targetURL, "http") {
+					probeEndpointMethods(targetURL, client, onFound)
+				}
+				seen[val] = true
+			}
+		}
+	}
+}
+
+func probeEndpointMethods(url string, client *http.Client, onFound func(core.Finding)) {
+	methods := []string{"GET", "POST", "PUT", "DELETE"}
+	vulnerableMethods := []string{}
+	
+	// Create a client that doesn't follow redirects to avoid logging in
+	noRedirectClient := &http.Client{
+		Timeout: client.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	for _, method := range methods {
+		req, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			continue
+		}
+		
+		utils.SetDefaultHeaders(req, url)
+		if method == "POST" || method == "PUT" {
+			req.Header.Set("Content-Type", "application/json")
+			// Add empty JSON body to avoid 400 Bad Request on some APIs
+			req.Body = io.NopCloser(strings.NewReader("{}"))
+		}
+
+		resp, err := noRedirectClient.Do(req)
+		if err != nil {
+			continue
+		}
+		
+		// If we get a 200 OK or 201 Created on an API endpoint without auth, it's highly suspicious
+		if resp.StatusCode == 200 || resp.StatusCode == 201 {
+			body, _ := io.ReadAll(resp.Body)
+			bodyStr := strings.ToLower(string(body))
+			
+			// Filter out common false positives (e.g., standard login pages returning 200)
+			if !strings.Contains(bodyStr, "<html") && !strings.Contains(bodyStr, "login") && len(bodyStr) > 0 {
+				vulnerableMethods = append(vulnerableMethods, fmt.Sprintf("%s (%d)", method, resp.StatusCode))
+			}
+		}
+		resp.Body.Close()
+	}
+
+	if len(vulnerableMethods) > 0 {
+		onFound(core.Finding{
+			Type:     "Unauthenticated API Access",
+			Target:   url,
+			Detail:   fmt.Sprintf("Endpoint discovered in JS allows unauthenticated access via methods: %s", strings.Join(vulnerableMethods, ", ")),
+			Severity: "High",
+			Confidence: "probable",
+		})
 	}
 }

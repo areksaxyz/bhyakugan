@@ -17,26 +17,24 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah framework pemindaian backend otomatis berkecepatan tinggi yang dirancang khusus untuk Bug Bounty Hunter dan Security Researcher. Versi **3.8** menghadirkan engine **Exploitation-First**, deteksi GraphQL tingkat lanjut, analisis JS yang lebih mendalam, dan logic validasi kredensial otomatis.
+**Bhyakugan** adalah framework pemindaian backend otomatis berkecepatan tinggi yang dirancang khusus untuk Bug Bounty Hunter dan Security Researcher. Versi **4.0 (Autonomous Upgrade)** menghadirkan engine eksploitasi otomatis, dukungan multi-cloud, dan analisis endpoint JavaScript yang lebih agresif.
 
-## 🔥 Fitur Unggulan (v3.8)
+## 🔥 Fitur Unggulan (v4.0)
 
-### 🎯 Exploitation-First Engine
-*   **Active API Key Abuse**: Tidak hanya menemukan pola, Bhyakugan secara aktif mencoba menggunakan API Key yang ditemukan (Google Maps, Vision, Gemini, Firebase) untuk memverifikasi apakah key tersebut benar-benar *vulnerable* atau *restricted*.
-*   **GraphQL Elite Detection**:
-    *   **GID BOLA**: Mencoba mengakses objek privat menggunakan teknik *Global ID* (H1 inspired).
-    *   **Field-Level Bypass**: Mencoba teknik *Pivot Query* (Org -> Project -> Webhook) untuk melewati proteksi izin pada level root.
-*   **One Apostrophe SQLi**: Pendekatan agresif terhadap parameter sensitif (`companyID`, `fundId`, `userId`) dengan verifikasi pesan error database eksplisit.
+### 🎯 Autonomous Exploit Engine
+*   **XPath XML Dumping**: Tidak hanya mendeteksi *boolean differential*, Bhyakugan sekarang secara otomatis melakukan *blind-dumping* nama node, jumlah elemen, dan atribut XML internal menggunakan teknik `count()`, `string-length()`, dan `substring()`.
+*   **Multi-Cloud Bucket Hunter**: Jangkauan diperluas ke **AWS S3, Google Cloud Storage (GCP), dan Azure Blob**. Engine secara otomatis melakukan **Sensitive File Hunting** (mencari `.env`, `backup.sql`, `users.json`) di dalam bucket publik dan menaikkan severity menjadi **Critical** jika ditemukan.
+*   **Active AI Secret Validator**: Menambahkan dukungan untuk **xAI (Grok)** dan **DeepSeek** API Keys dengan logic validasi saldo/quota otomatis.
 
-### 🔍 Advanced JS Analyzer
-*   **XSSI Detection**: Teknik perbandingan respon (*Cookie-aware*) untuk mendeteksi file JS dinamis yang membocorkan data sesi cross-origin.
-*   **Secret Constant Extraction**: Mencari hardcoded secrets di JS seperti konstanta penandatanganan (CryptoJS) dan variabel token sensitif.
-*   **Auto-Redirect Scanning**: Scanner sekarang mengikuti redirect (`301/302`) untuk memastikan konten di halaman dashboard terekstrak dengan benar.
+### 🔍 Proactive JS API Mapper
+*   **Method Probing**: Setiap endpoint API yang ditemukan di dalam file JavaScript otomatis ditembak menggunakan berbagai method HTTP (`GET`, `POST`, `PUT`, `DELETE`) dengan *No-Redirect Client* untuk menemukan akses unauthenticated pada fitur tersembunyi.
+*   **Firebase Config Extraction**: Regex spesifik untuk mengekstrak objek konfigurasi Firebase lengkap untuk mempermudah identifikasi *misconfiguration* pada Firebase Installation API.
+*   **Smart Sourcemap Triage**: Membedakan antara library pihak ketiga (Low) dan kode internal aplikasi seperti `app.js.map` atau `admin.js.map` (Medium) untuk mengurangi noise.
 
 ### ✅ Enterprise-Grade Scanning
-*   **Stateful Scanning**: Mendukung `CookieJar` untuk menyimpan sesi selama pemindaian, memungkinkan deteksi celah yang hanya muncul setelah otentikasi.
-*   **Auto-Scan Discovered Paths**: Setiap path baru yang ditemukan oleh module direktori otomatis di-scan ulang oleh seluruh plugin (Injections, Auth, Logic).
-*   **Smart HTML Reporting**: Laporan HTML sekarang konsisten berdasarkan nama target (tidak lagi membuat banyak file dengan timestamp) dan menyertakan preview respon yang rentan.
+*   **Enhanced Directory Wordlist**: Penambahan massal path sensitif termasuk `.bzr/`, `.hg/`, `WEB-INF/`, serta berbagai variasi file backup dan konfigurasi modern.
+*   **Open Redirect Module**: Deteksi otomatis celah redirect menggunakan parameter umum (`next`, `redir`, `url`) dengan payload bypass modern.
+*   **Unauthenticated File Upload**: Mencoba melakukan upload file `.php` dummy ke endpoint yang dicurigai sebagai uploader untuk memverifikasi proteksi filter.
 
 ## 🛠️ Instalasi
 
@@ -64,76 +62,70 @@ Alat akan memuat data lama dan menambah temuan baru secara otomatis.
 ./bhyakugan -domain example.com -depth 1
 ```
 
-### Opsi Flag
-| Flag | Deskripsi |
-| :--- | :--- |
-| `-domain` | Domain utama untuk scan wildcard (Recon + Scan) |
-| `-target` | URL spesifik untuk dipindai (Single Mode) |
-| `-depth` | Kedalaman crawling (1 = page ini saja, 2+ = recursive) |
-| `-mode` | Mode scan: `strict`, `balanced`, `aggressive`, `bounty`, `lab` (default: `balanced`) |
-| `-fast` | Profil triage cepat (mengurangi modul berat dan waktu scan) |
-| `-max-endpoints` | Batas endpoint per host (0 = auto/unlimited) |
-
-## 🎯 Mode Scan
-
-| Mode | Karakteristik |
-| :--- | :--- |
-| **strict** | Hanya menampilkan Critical/High yang sudah tervalidasi (Confirmed). |
-| **balanced** | Rekomendasi utama. Menampilkan temuan valid (Low-Critical) tanpa terlalu banyak noise. |
-| **aggressive** | Menampilkan semua sinyal meskipun lemah. Cocok untuk environment lab. |
-
 ## 🛡️ Modul Deteksi Elite
 
 | Kategori | Fitur Utama |
 | :--- | :--- |
-| **GraphQL** | Introspection, Batching, GID BOLA, Field-Level Bypass (PII Leak) |
-| **JS Analysis** | XSSI Detection, Sourcemap Leak, Token Extraction, CryptoJS Secrets |
-| **API Keys** | Active Abuse Testing (Google Services, AWS, GitHub, OpenAI, dll) |
-| **Injections** | SQLi (Error & Time-based), NoSQLi, SSRF (Cloud Meta), LFI (PHP Wrappers) |
-| **Logic** | Proxy Header Trust, Prototype Pollution, SAML Signature Stripping, JWT none-alg |
+| **Injections** | **XPath Auto-Dump**, SQLi, NoSQLi, SSRF, LFI, SSTI, PHP Type Juggling |
+| **Cloud Exposure** | **AWS S3, GCP Storage, Azure Blob** (with Sensitive File Hunting) |
+| **JS Analysis** | **API Probing**, XSSI, Sourcemap Leak, Firebase Config, CryptoJS Secrets |
+| **API Keys** | **xAI (Grok), DeepSeek**, Google, AWS, GitHub, OpenAI, dll (with Validation) |
+| **Vulns** | **Open Redirect**, **Unauthenticated File Upload**, JWT none-alg, SAML Stripping |
 
-## 🌐 Arsitektur (Workflow)
+## 🌐 Arsitektur & Alur Kerja (Workflow)
+
+Bhyakugan beroperasi dengan pipeline **Scan-Validate-Exploit-Score** yang terintegrasi secara otomatis:
 
 ```mermaid
 graph TD
-    A[Input: Domain/URL] --> B{Mode Scan}
+    A[Input: Domain/URL] --> B{Tipe Input}
     
-    subgraph "Phase 1: Incremental Recon"
-    B -->|Wildcard| C[Load Subdomain History]
-    C --> D[Parallel Discovery: Subfinder + Assetfinder + crt.sh]
-    D --> E[Deduplication & Wildcard Cleaning]
-    E --> F[Save Updated History]
-    F --> G[httpx: Filtering Live Hosts]
+    subgraph "Phase 1: Intelligent Recon"
+    B -->|Wildcard| C[Subdomain Discovery: Parallel Engine]
+    C --> D[httpx: Live Host Filtering & Tech Profiling]
     end
     
-    subgraph "Phase 2: Core Scanning & State"
-    B -->|Single Target| H[Scanner Engine + CookieJar]
-    G --> H
-    H --> I[Isolated Parallel Modules]
-    
-    I --> I1[Injections: SQLi Error-Based, SSRF, LFI]
-    I --> I2[Logic: PP, Proxy, ORM Leak]
-    I --> I3[GraphQL: GID BOLA, Field Bypass]
-    I --> I4[Secrets: Active Validator]
-    I --> I5[JS: XSSI, Token & Crypto Secrets]
+    subgraph "Phase 2: Discovery & Crawling"
+    B -->|Single URL| E[Core Scanner Engine]
+    D --> E
+    E --> F[Recursive Crawler & JS API Mapping]
+    E --> G[Directory Discovery: High-Density Wordlist]
     end
 
-    subgraph "Phase 3: Active Exploitation & Feedback"
-    I4 --> E1[API Key Abuse Engine: Maps/Gemini/Firebase]
-    I1 --> E2[One Apostrophe Validation]
-    I5 --> E3[XSSI Cookie-Aware Comparison]
-    
-    subgraph "Recursive Discovery"
-    D1[Directory Discovery] -->|New Path Found| H
+    subgraph "Phase 3: Vulnerability & Logic Analysis"
+    F & G --> H[Parallel Security Modules]
+    H --> H1[Injections: SQLi, NoSQLi, LFI, SSTI]
+    H --> H2[XPath Auto-Dump Engine]
+    H --> H3[JS Proactive Probing: GET/POST/PUT/DELETE]
+    H --> H4[Cloud Storage Hunter: AWS/GCP/Azure]
+    H --> H5[Auth Misconfig & Logic Bypasses]
     end
+
+    subgraph "Phase 4: Autonomous Validation & Exploitation"
+    H1 --> V1[Behavioral Validation: 3-Way Baseline]
+    H2 --> V2[Blind XML Data Extraction]
+    H3 --> V3[Unauthenticated API Verification]
+    H4 --> V4[Sensitive File Hunting: .env, backup.sql]
+    H --> V5[Active AI Secret Validator: Grok/DeepSeek/Google]
     end
     
-    subgraph "Phase 4: Smart Reporting"
-    E1 & E2 & E3 & I2 & I3 & D1 --> J["Deduplication Engine"]
-    J --> K["Severity Scoring (Exploit-First)"]
-    K --> L["Final HTML Report (Target-Based Name)"]
+    subgraph "Phase 5: Smart Reporting"
+    V1 & V2 & V3 & V4 & V5 --> I[Deduplication & Severity Scoring]
+    I --> J[Final HTML Report: Exploit Evidence Attached]
     end
 ```
+
+### Detil Alur Kerja:
+
+1.  **Reconnaissance (Wildcard Mode)**: Jika input berupa domain, Bhyakugan menjalankan `subfinder`, `assetfinder`, dan `crt.sh` secara paralel, melakukan deduplikasi, dan memfilter host aktif menggunakan `httpx`.
+2.  **Profiling & Baseline**: Sebelum memindai, engine melakukan *Profiling* (deteksi Bahasa, Framework, WAF) dan mengumpulkan *Baseline* respon normal untuk deteksi berbasis perilaku (*behavioral analysis*).
+3.  **Discovery Phase**:
+    *   **Directory Discovery**: Menyisir ribuan *hidden path* menggunakan wordlist yang telah ditingkatkan.
+    *   **JS API Mapper**: Mengekstrak endpoint API dari file JavaScript dan langsung melakukan **Probing Aktif** (mencoba method HTTP yang berbeda) untuk mencari akses tanpa otentikasi.
+4.  **Vulnerability Pipeline**: Menjalankan modul injeksi dan logika secara paralel. Modul khusus seperti **XPath Engine** akan otomatis beralih ke mode **Auto-Dump** jika differential terdeteksi.
+5.  **Multi-Cloud Hunter**: Jika ditemukan referensi cloud storage, engine akan memverifikasi izin bucket (AWS/GCP/Azure) dan secara agresif mencari file sensitif seperti `.env` atau `backup.sql`.
+6.  **Autonomous Validation**: Setiap temuan *secret* (API Key) divalidasi langsung ke provider (Google, Grok, DeepSeek, dll) untuk memastikan apakah key tersebut valid, memiliki saldo, atau bisa disalahgunakan.
+7.  **Smart Scoring & Reporting**: Hasil akhir dikonsolidasikan, dihilangkan duplikasinya, dan diberi skor berdasarkan tingkat eksploitasi nyata (bukan sekadar regex match) dalam laporan HTML yang komprehensif.
 
 ## ⚠️ Disclaimer
 Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.

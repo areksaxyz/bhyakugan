@@ -74,6 +74,23 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	baseURL = ensureTrailingSlash(baseURL)
 
 	params := []string{"id", "user", "name", "search", "query", "xml"}
+	
+	// Add parameters from the actual URL
+	if u, err := url.Parse(baseURL); err == nil {
+		for p := range u.Query() {
+			found := false
+			for _, existing := range params {
+				if p == existing {
+					found = true
+					break
+				}
+			}
+			if !found {
+				params = append(params, p)
+			}
+		}
+	}
+
 	baselines := collectBaselines(baseURL, params, client)
 	if len(baselines) == 0 {
 		return
@@ -138,7 +155,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			})
 		}
 
-		for _, ev := range analyzeDeterministicPairEvidence(param, base, probes) {
+		for _, ev := range analyzeDeterministicPairEvidence(param, baseURL, base, probes, client) {
 			affectedParams[param] = true
 			allEvidence = append(allEvidence, ev)
 		}
@@ -254,18 +271,19 @@ func containsDeterministicXPathEvidence(reps []xpathEvidence) bool {
 	return false
 }
 
-func analyzeDeterministicPairEvidence(param string, base xpathBaseline, probes map[string]xpathProbe) []xpathEvidence {
+func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBaseline, probes map[string]xpathProbe, client *http.Client) []xpathEvidence {
 	out := make([]xpathEvidence, 0, 2)
 
 	if t, ok := probes["XPath Boolean TRUE"]; ok {
 		if f, okFalse := probes["XPath Boolean FALSE"]; okFalse {
 			if signal, okDiff := detectDeterministicDifferential(base, t, f, "boolean"); okDiff {
+				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Boolean Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        signal,
+					signal:        signal + exploitResults,
 					severity:      "High",
 					confidence:    "confirmed",
 					deterministic: true,
@@ -279,12 +297,13 @@ func analyzeDeterministicPairEvidence(param string, base xpathBaseline, probes m
 	if t, ok := probes["XPath Count TRUE"]; ok {
 		if f, okFalse := probes["XPath Count FALSE"]; okFalse {
 			if signal, okDiff := detectDeterministicDifferential(base, t, f, "count"); okDiff {
+				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Count Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        signal,
+					signal:        signal + exploitResults,
 					severity:      "High",
 					confidence:    "confirmed",
 					deterministic: true,
@@ -519,11 +538,22 @@ func shortHash(h string) string {
 	return h[:12]
 }
 
-func ensureTrailingSlash(u string) string {
-	if strings.HasSuffix(u, "/") {
-		return u
+func ensureTrailingSlash(uStr string) string {
+	u, err := url.Parse(uStr)
+	if err != nil {
+		if strings.Contains(uStr, "?") {
+			return uStr
+		}
+		if !strings.HasSuffix(uStr, "/") {
+			return uStr + "/"
+		}
+		return uStr
 	}
-	return u + "/"
+
+	if !strings.HasSuffix(u.Path, "/") {
+		u.Path += "/"
+	}
+	return u.String()
 }
 
 func canonicalEndpoint(raw string) string {

@@ -38,7 +38,13 @@ func Scan(baseURL string, client *http.Client, payloadFile string, onFound func(
 	// 2. Run SSI/ESI Scan
 	ScanSSI(baseURL, client, onFound)
 
-	// 3. Run Generic Vulnerability Checks (Built-in)
+	// 3. Run Open Redirect Scan
+	ScanOpenRedirect(baseURL, client, onFound)
+
+	// 4. Run File Upload Scan
+	ScanFileUpload(baseURL, client, onFound)
+
+	// 5. Run Generic Vulnerability Checks (Built-in)
 	if baseURL[len(baseURL)-1] != '/' {
 		baseURL += "/"
 	}

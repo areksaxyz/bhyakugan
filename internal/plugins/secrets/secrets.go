@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/yupiyy/bhyakugan/internal/utils"
 )
 
 // Validator defines how to check if a key is live
@@ -36,6 +37,28 @@ var Patterns = []SecretPattern{
 		Validator: &Validator{
 			Method:       "GET",
 			URL:          "https://api.openai.com/v1/models",
+			Headers:      map[string]string{"Authorization": "Bearer %s"},
+			ExpectedCode: 200,
+		},
+	},
+	{
+		Name:     "Grok (xAI) API Key",
+		Pattern:  regexp.MustCompile(`xai-[a-zA-Z0-9]{40,}`),
+		Severity: "Critical",
+		Validator: &Validator{
+			Method:       "GET",
+			URL:          "https://api.x.ai/v1/models",
+			Headers:      map[string]string{"Authorization": "Bearer %s"},
+			ExpectedCode: 200,
+		},
+	},
+	{
+		Name:     "DeepSeek API Key",
+		Pattern:  regexp.MustCompile(`sk-[a-f0-9]{32}`),
+		Severity: "Critical",
+		Validator: &Validator{
+			Method:       "GET",
+			URL:          "https://api.deepseek.com/user/balance",
 			Headers:      map[string]string{"Authorization": "Bearer %s"},
 			ExpectedCode: 200,
 		},
@@ -77,6 +100,12 @@ var Patterns = []SecretPattern{
 		Pattern:   regexp.MustCompile(`\b[0-9a-zA-Z/+=]{40}\b`),
 		Severity:  "Info",
 		Validator: nil,
+	},
+	{
+		Name:     "Firebase Configuration",
+		Pattern:  regexp.MustCompile(`(?is)(?:firebase|config).*?apiKey\s*[:=]\s*["'](AIza[0-9A-Za-z\-_]{35,})["']`),
+		Severity: "High",
+		Validator: nil, // Note: The generic Google API Key validator in exploitation_engine.go handles Firebase installation abuse testing
 	},
 	{
 		Name:     "Google API Key",
@@ -161,6 +190,16 @@ var Patterns = []SecretPattern{
 		Severity:  "Info",
 		Validator: nil,
 	},
+	{
+		Name:     "Generic Client ID",
+		Pattern:  regexp.MustCompile(`(?i)(?:client_id|clientid|app_id|appid)\s*[:=]\s*["']([a-zA-Z0-9\-_]{16,})["']`),
+		Severity: "Info",
+	},
+	{
+		Name:     "Generic Client Secret",
+		Pattern:  regexp.MustCompile(`(?i)(?:client_secret|clientsecret|app_secret|appsecret)\s*[:=]\s*["']([a-zA-Z0-9\-_]{32,})["']`),
+		Severity: "High",
+	},
 }
 
 // Additional helper for SQL content verification
@@ -198,6 +237,17 @@ func Scan(url string, client *http.Client, onFound func(core.Finding)) {
 }
 
 func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
+	type FoundKey struct {
+		Name     string
+		Key      string
+		Severity string
+		Pattern  SecretPattern
+	}
+
+	foundKeys := []FoundKey{}
+	awsAccessKeys := []string{}
+	awsSecretKeys := []string{}
+
 	for _, p := range Patterns {
 		matches := p.Pattern.FindAllStringSubmatch(content, -1)
 		seen := make(map[string]bool)
@@ -207,7 +257,7 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 				rawKey = m[len(m)-1]
 			}
 			cleanKey := strings.Trim(rawKey, ` "'=`)
-			
+
 			if len(cleanKey) < 8 && p.Name != "Database Backup File" {
 				continue
 			}
@@ -238,70 +288,153 @@ func DetectInContent(content, sourceURL string, onFound func(core.Finding)) {
 			}
 			seen[cleanKey] = true
 
-			detail := fmt.Sprintf("Found %s pattern.", p.Name)
-			severity := p.Severity
-
-			// Special handling for Database Backup File:
-			if p.Name == "Database Backup File" {
-				if strings.HasSuffix(strings.ToLower(sourceURL), ".sql") {
-					if !isSQLContent(content) {
-						continue // False Positive (Soft 404 or non-SQL content)
-					}
-					severity = "Critical" // It's a verified dump!
-					detail = "Verified SQL Dump file (Header/Structure confirmed)."
-				} else {
+			// Special handling for AWS Secret Access Key: Entropy check and Context Validation
+			if p.Name == "AWS Secret Access Key" {
+				entropy := utils.CalculateShannonEntropy(cleanKey)
+				if entropy < 3.7 { // Slightly higher threshold for solo keys
 					continue
 				}
-			}
 
-			// Special handling for CodeIgniter Config
-			if p.Name == "CodeIgniter DB Config" {
-				if strings.Contains(cleanKey, "''") || strings.Contains(cleanKey, "'password'") { // empty password
-					severity = "Medium"
-					detail = "Found DB Config pattern (Empty/Placeholder password)."
-				} else {
-					severity = "High"
-					detail = "Found DB Config with potential password assignment."
+				// If no pair is found later, we want to know if 'aws' or 'key' keywords are nearby
+				// We'll store the match index or just check context here
+				if !hasContextKeywords(content, cleanKey, []string{"aws", "secret", "access", "key", "s3", "bucket", "config"}) {
+					continue // Skip if no context found
 				}
+
+				awsSecretKeys = append(awsSecretKeys, cleanKey)
 			}
 
-			if p.Name == "Google API Key" {
-				RunExploitationEngine(p.Name, cleanKey, sourceURL, onFound)
-				continue 
+			if p.Name == "AWS Access Key" {
+				awsAccessKeys = append(awsAccessKeys, cleanKey)
 			}
 
-			if p.Validator != nil {
-				if strings.Contains(sourceURL, "localhost") && strings.Contains(p.Validator.URL, "localhost") {
-					// Skip
-				} else {
-					status, msg := verifyKey(cleanKey, p.Validator)
-
-					switch status {
-					case "Valid":
-						severity = "Critical"
-						detail = fmt.Sprintf("VERIFIED %s: %s (%s)", p.Name, cleanKey, msg)
-					case "Restricted":
-						severity = "Info"
-						detail = fmt.Sprintf("VERIFIED %s (Restricted): %s (%s)", p.Name, cleanKey, msg)
-					case "Invalid":
-						continue
-					case "Error":
-						continue
-					}
-				}
-			} else if severity == "High" {
-				detail += " Validity not verified. No permission testing performed."
-			}
-
-			fmt.Printf("[+] SECRET MATCH: %s [%s]\n", p.Name, severity)
-			onFound(core.Finding{
-				Type:     "Secret Leak",
-				Target:   sourceURL,
-				Detail:   detail,
-				Severity: severity,
+			foundKeys = append(foundKeys, FoundKey{
+				Name:     p.Name,
+				Key:      cleanKey,
+				Severity: p.Severity,
+				Pattern:  p,
 			})
 		}
 	}
+
+	// Pair Detection for AWS
+	isAWSPairFound := len(awsAccessKeys) > 0 && len(awsSecretKeys) > 0
+	if isAWSPairFound {
+		onFound(core.Finding{
+			Type:     "Secret Leak",
+			Target:   sourceURL,
+			Detail:   fmt.Sprintf("Found AWS Pair (Access Key ID and Secret Access Key) in the same content. This is a High Signal for Valid Credentials.\nAccess Key: %s\nSecret Key: [REDACTED]", awsAccessKeys[0]),
+			Severity: "High",
+		})
+	}
+
+	for _, fk := range foundKeys {
+		p := fk.Pattern
+		cleanKey := fk.Key
+		severity := fk.Severity
+		detail := fmt.Sprintf("Found %s pattern.", p.Name)
+
+		// Special handling for Database Backup File:
+		if p.Name == "Database Backup File" {
+			if strings.HasSuffix(strings.ToLower(sourceURL), ".sql") {
+				if !isSQLContent(content) {
+					continue // False Positive (Soft 404 or non-SQL content)
+				}
+				severity = "Critical" // It's a verified dump!
+				detail = "Verified SQL Dump file (Header/Structure confirmed)."
+			} else {
+				continue
+			}
+		}
+
+		// Special handling for CodeIgniter Config
+		if p.Name == "CodeIgniter DB Config" {
+			if strings.Contains(cleanKey, "''") || strings.Contains(cleanKey, "'password'") { // empty password
+				severity = "Medium"
+				detail = "Found DB Config pattern (Empty/Placeholder password)."
+			} else {
+				severity = "High"
+				detail = "Found DB Config with potential password assignment."
+			}
+		}
+
+		if p.Name == "Google API Key" {
+			RunExploitationEngine(p.Name, cleanKey, sourceURL, onFound)
+			continue
+		}
+
+		// Don't duplicate if already flagged as AWS pair
+		if isAWSPairFound && (p.Name == "AWS Access Key" || p.Name == "AWS Secret Access Key") {
+			// Still might want to report them individually if they were found separately, but in the same content we already flagged the pair.
+			// Let's report the Secret Key as Medium if part of a pair but not individually for now to avoid noise.
+			if p.Name == "AWS Secret Access Key" {
+				severity = "Medium"
+				detail = fmt.Sprintf("AWS Secret Key part of a detected pair. Entropy: %.2f", utils.CalculateShannonEntropy(cleanKey))
+			} else {
+				continue // Skip individual Access Key report if pair found
+			}
+		} else if p.Name == "AWS Secret Access Key" {
+			// Individual AWS Secret Key with no Access Key found in same content
+			severity = "Low"
+			detail = fmt.Sprintf("Found AWS Secret Access Key pattern (No matching Access Key found). Entropy: %.2f", utils.CalculateShannonEntropy(cleanKey))
+		}
+
+		if p.Validator != nil {
+			if strings.Contains(sourceURL, "localhost") || strings.Contains(sourceURL, "127.0.0.1") {
+				detail = fmt.Sprintf("Found %s pattern (Validation skipped on localhost).", p.Name)
+				// Keep severity as defined in pattern
+			} else {
+				status, msg := verifyKey(cleanKey, p.Validator)
+
+				switch status {
+				case "Valid":
+					severity = "Critical"
+					detail = fmt.Sprintf("VERIFIED %s: %s (%s)", p.Name, cleanKey, msg)
+				case "Restricted":
+					severity = "Info"
+					detail = fmt.Sprintf("VERIFIED %s (Restricted): %s (%s)", p.Name, cleanKey, msg)
+				case "Invalid":
+					continue
+				case "Error":
+					continue
+				}
+			}
+		} else if severity == "High" {
+			detail += " Validity not verified. No permission testing performed."
+		}
+
+		fmt.Printf("[+] SECRET MATCH: %s [%s]\n", p.Name, severity)
+		onFound(core.Finding{
+			Type:     "Secret Leak",
+			Target:   sourceURL,
+			Detail:   detail,
+			Severity: severity,
+		})
+	}
+}
+
+func hasContextKeywords(content, key string, keywords []string) bool {
+	idx := strings.Index(content, key)
+	if idx == -1 {
+		return false
+	}
+
+	start := idx - 100
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(key) + 100
+	if end > len(content) {
+		end = len(content)
+	}
+
+	context := strings.ToLower(content[start:end])
+	for _, kw := range keywords {
+		if strings.Contains(context, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func isLikelyRealPrivateKeyBlock(block string) bool {

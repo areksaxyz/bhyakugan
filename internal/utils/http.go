@@ -101,3 +101,20 @@ func Truncate(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
+
+// InjectPayload replaces the value of a specific query parameter in a URL with a payload.
+func InjectPayload(baseURL, param, payload string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+
+	q := u.Query()
+	if q.Has(param) {
+		q.Set(param, payload)
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+
+	return ""
+}

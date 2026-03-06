@@ -37,10 +37,10 @@ fi
 echo "[*] Running bhyakugan against $TARGET"
 "$OUT_BIN" -target "$TARGET" -depth "$DEPTH" -timeout "$TIMEOUT" -mode "$MODE" >"$SCAN_LOG" 2>&1 || true
 
-REPORT_FILE="bhyakugan-output/report_http_127.0.0.1_${PORT}.html"
+REPORT_FILE="bhyakugan-output/report_http_127.0.0.1:${PORT}.html"
 if [[ ! -f "$REPORT_FILE" ]]; then
   # Backward compatibility for legacy timestamp-based reports.
-  REPORT_FILE="$(ls -1t bhyakugan-output/report_*"${PORT}"_*.html 2>/dev/null | head -n 1 || true)"
+  REPORT_FILE="$(ls -1t bhyakugan-output/report_*"${PORT}"*.html 2>/dev/null | head -n 1 || true)"
 fi
 if [[ -z "$REPORT_FILE" ]]; then
   echo "[-] Report file not found for localhost run"
@@ -68,6 +68,8 @@ declare -a REQUIRED_PATTERNS=(
   "XPath Injection|XML Query Injection"
   "OS Command Injection (Time-Based)"
   "JWT None Algorithm"
+  "Open Redirect"
+  "Unauthenticated File Upload"
 )
 
 missing=0

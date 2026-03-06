@@ -179,6 +179,7 @@ func main() {
 		mux.HandleFunc(p, handleWebSocket)
 	}
 
+	mux.HandleFunc("/redirect", handleOpenRedirect)
 	mux.HandleFunc("/maps/api/geocode/json", handleGoogleMock)
 	mux.HandleFunc("/v1/images:annotate", handleGoogleMock)
 	mux.HandleFunc("/v1beta/models", handleGoogleMock)
@@ -189,6 +190,7 @@ func main() {
 	mux.HandleFunc("/auth/login", handleAuthLogin)
 	mux.HandleFunc("/template", handleTemplate)
 	mux.HandleFunc("/api/fetch", handleFetch)
+	mux.HandleFunc("/api/upload", handleFileUpload)
 	mux.HandleFunc("/api/login", handleAPILogin)
 	mux.HandleFunc("/vuln/eval", handleEval)
 	mux.HandleFunc("/vuln/sql", handleSQL)
@@ -880,6 +882,9 @@ func hasXPathBypass(r *http.Request) bool {
 				strings.Contains(c, "' or ''='") ||
 				strings.Contains(c, "//*") ||
 				strings.Contains(c, "count(/*)=1") ||
+				strings.Contains(c, "count(/*)>0") ||
+				strings.Contains(c, "string-length(name(/*[1]))=4") ||
+				strings.Contains(c, "substring(name(/*[1]),1,1)='r'") ||
 				strings.Contains(c, "name()='username'") {
 				return true
 			}
@@ -1008,6 +1013,8 @@ func baseDashboardHTML(wcd bool) string {
             <li><a href="/.git/HEAD">Git metadata</a></li>
             <li><a href="/backup.sql">Backup dump</a></li>
             <li><a href="/server-status">Server status</a></li>
+            <li><a href="/redirect?url=https://google.com">Open Redirect</a></li>
+            <li><a href="/api/upload">File Upload API</a></li>
           </ul>
         </article>
         <article class="card">
@@ -1089,3 +1096,38 @@ func handleGoogleMock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, `{"error":{"message":"API key not valid."}}`)
 	}
 }
+
+func handleOpenRedirect(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("url")
+	if target == "" {
+		target = r.URL.Query().Get("next")
+	}
+	if target != "" {
+		http.Redirect(w, r, target, 302)
+		return
+	}
+	writeHTML(w, 200, "<html><body><h1>Redirect Portal</h1></body></html>")
+}
+
+func handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, `{"error":"Method not allowed"}`)
+		return
+	}
+	
+	err := r.ParseMultipartForm(10 << 20)
+	if err != nil {
+		writeJSON(w, 400, `{"error":"Unable to parse form"}`)
+		return
+	}
+	
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, `{"error":"File not found in request"}`)
+		return
+	}
+	defer file.Close()
+	
+	writeJSON(w, 201, fmt.Sprintf(`{"status":"success", "message":"File %s uploaded successfully"}`, header.Filename))
+}
+

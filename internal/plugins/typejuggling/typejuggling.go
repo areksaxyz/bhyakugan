@@ -36,8 +36,15 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 
 	if !isAuthPath { return }
 
-	reqBase, _ := http.NewRequest("GET", baseURL+"?bhyakugan_control=true", nil)
-	utils.SetDefaultHeaders(reqBase, baseURL)
+	controlURL := baseURL
+	if strings.Contains(baseURL, "?") {
+		controlURL += "&bhyakugan_control=true"
+	} else {
+		controlURL += "?bhyakugan_control=true"
+	}
+
+	reqBase, _ := http.NewRequest("GET", controlURL, nil)
+	utils.SetDefaultHeaders(reqBase, controlURL)
 	baseResp, _ := client.Do(reqBase)
 	
 	baseLen := -1

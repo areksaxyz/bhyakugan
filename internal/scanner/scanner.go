@@ -78,7 +78,7 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 	headers := resp.Header
 	server := strings.ToLower(headers.Get("Server"))
 	poweredBy := strings.ToLower(headers.Get("X-Powered-By"))
-	cookies := strings.Join(headers.Values("Set-Cookie"), " ")
+	cookies := strings.ToLower(strings.Join(headers.Values("Set-Cookie"), " "))
 
 	if strings.Contains(server, "cloudflare") || headers.Get("Cf-Ray") != "" {
 		ctx.WAF = "cloudflare"

@@ -1,0 +1,5 @@
+http://169.254.169.254/latest/meta-data/
+http://169.254.169.254/latest/user-data/
+http://169.254.169.254/metadata/instance?api-version=2021-02-01
+http://metadata.google.internal/computeMetadata/v1/
+http://metadata.google.internal/

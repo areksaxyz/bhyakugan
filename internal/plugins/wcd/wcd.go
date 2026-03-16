@@ -25,7 +25,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		return
 	}
 	defer baseResp.Body.Close()
-	baseBody, _ := io.ReadAll(baseResp.Body)
+	baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(baseResp.Body, 5*1024*1024), 5*1024*1024))
 	baseBodyStr := string(baseBody)
 
 	// If body is too short, WCD testing might not be reliable
@@ -43,7 +43,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			}
 			defer resp.Body.Close()
 
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			bodyStr := string(body)
 
 			// Heuristic Detection:

@@ -28,7 +28,7 @@ func TestCheckIntrospectionSeverityInfo(t *testing.T) {
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Method == http.MethodPost {
-				body, _ := io.ReadAll(req.Body)
+				body, _ := io.ReadAll(io.LimitReader(io.LimitReader(req.Body, 5*1024*1024), 5*1024*1024))
 				if strings.Contains(string(body), "IntrospectionQuery") {
 					return testResponse(req, http.StatusOK, `{"data":{"__schema":{"queryType":{"name":"Query"}}}}`), nil
 				}

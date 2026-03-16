@@ -1,0 +1,6 @@
+query
+operationName
+variables
+extensions
+id
+documentId

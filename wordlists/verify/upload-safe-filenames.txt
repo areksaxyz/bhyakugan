@@ -1,0 +1,10 @@
+proof.txt
+upload-test.txt
+sample.txt
+image-test.png
+avatar-test.png
+document-test.pdf
+report-test.csv
+notes.txt
+healthcheck.txt
+verification.txt

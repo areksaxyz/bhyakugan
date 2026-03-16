@@ -8,7 +8,9 @@ PATT_PATH="${PATT_PATH:-/home/yupiyy/tools/bug/PayloadsAllTheThings}"
 OUT_BIN="/tmp/bhyakugan_regression"
 
 echo "[*] Building scanner"
-GOCACHE=/tmp/go-build go build -o "$OUT_BIN" cmd/bhyakugan/main.go
+GOCACHE=/tmp/go-build go build ./cmd/bhyakugan
+GOCACHE=/tmp/go-build go test ./cmd/... ./internal/...
+GOCACHE=/tmp/go-build go build -o "$OUT_BIN" ./cmd/bhyakugan
 
 echo "[*] Starting mockserver"
 GOCACHE=/tmp/go-build go run cmd/mockserver/main.go >/tmp/bhyakugan_mock.log 2>&1 &

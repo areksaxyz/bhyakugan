@@ -38,7 +38,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound func(core.Finding)) {
 	id, _ := strconv.Atoi(originalVal)
-	
+
 	// Try +1 and -1
 	testValues := []string{strconv.Itoa(id + 1), strconv.Itoa(id - 1)}
 	if id <= 0 {
@@ -51,7 +51,7 @@ func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound 
 		return
 	}
 	defer baseResp.Body.Close()
-	baseBody, _ := io.ReadAll(baseResp.Body)
+	baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(baseResp.Body, 5*1024*1024), 5*1024*1024))
 	baseBodyStr := string(baseBody)
 	baseLen := len(baseBodyStr)
 
@@ -61,7 +61,7 @@ func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound 
 
 	for _, tVal := range testValues {
 		if tVal == "0" && id != 0 {
-			continue 
+			continue
 		}
 
 		u, _ := url.Parse(baseURL)
@@ -75,7 +75,7 @@ func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound 
 			continue
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(body)
 
 		// Heuristic for IDOR in unauthenticated context:
@@ -96,9 +96,9 @@ func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound 
 			// If length is significantly different but not too much (e.g. not a 10x difference which usually means error/redirect)
 			if diff > 0 && diff < baseLen/2 {
 				// Check if it looks like JSON or structured data
-				isData := strings.HasPrefix(strings.TrimSpace(bodyStr), "{") || 
-						  strings.HasPrefix(strings.TrimSpace(bodyStr), "[") ||
-						  strings.Contains(resp.Header.Get("Content-Type"), "application/json")
+				isData := strings.HasPrefix(strings.TrimSpace(bodyStr), "{") ||
+					strings.HasPrefix(strings.TrimSpace(bodyStr), "[") ||
+					strings.Contains(resp.Header.Get("Content-Type"), "application/json")
 
 				if isData {
 					onFound(core.Finding{

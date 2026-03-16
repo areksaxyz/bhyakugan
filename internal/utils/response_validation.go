@@ -15,7 +15,7 @@ func NormalizeBody(body string) string {
 	normalized := strings.ToLower(body)
 
 	// 2. Remove common dynamic patterns
-	
+
 	// Remove numbers (counts, times, IDs)
 	reNumbers := regexp.MustCompile(`\d+`)
 	normalized = reNumbers.ReplaceAllString(normalized, "0")

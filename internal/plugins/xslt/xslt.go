@@ -210,7 +210,7 @@ func collectBaselines(baseURL string, params []string, client *http.Client) map[
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		bodyLower := strings.ToLower(string(body))
 		fp := utils.BuildResponseFingerprint(resp, body)
@@ -238,7 +238,7 @@ func requestPayload(baseURL, param, payload string, client *http.Client) (target
 	if err != nil {
 		return "", "", "", "", utils.ResponseFingerprint{}, false
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	resp.Body.Close()
 	bodyStr = string(body)
 	bodyLower = strings.ToLower(bodyStr)

@@ -41,6 +41,7 @@ import (
 type Options struct {
 	Target           string
 	Timeout          int
+	Threads          int
 	PayloadFile      string
 	Depth            int
 	SharedJS         *sync.Map
@@ -48,6 +49,11 @@ type Options struct {
 	StrictValidation bool
 	Fast             bool
 	MaxEndpoints     int
+}
+
+type CrawlJob struct {
+	URL   string
+	Depth int
 }
 
 func profileTarget(urlStr string, client *http.Client) core.ScanContext {
@@ -76,7 +82,7 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 
 	ctx.Baseline = len(body)
 	bodyStr := strings.ToLower(string(body))
@@ -125,30 +131,52 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		onFound(processed)
 	}
 
-	scanConcurrency := 30
-	crawlConcurrency := 15
-	jsConcurrency := 10
-	if opts.Fast {
-		scanConcurrency = 10
-		crawlConcurrency = 5
-		jsConcurrency = 4
+	scanConcurrency := opts.Threads
+	if scanConcurrency <= 0 {
+		scanConcurrency = 30
+		if opts.Fast {
+			scanConcurrency = 10
+		}
 	}
+	crawlConcurrency := scanConcurrency / 2
+	if crawlConcurrency < 1 {
+		crawlConcurrency = 1
+	}
+	jsConcurrency := scanConcurrency / 3
+	if jsConcurrency < 1 {
+		jsConcurrency = 1
+	}
+
 	scanSem := make(chan struct{}, scanConcurrency)
 	crawlSem := make(chan struct{}, crawlConcurrency)
 	jsSem := make(chan struct{}, jsConcurrency)
+	followupSem := make(chan struct{}, crawlConcurrency)
 	maxEndpoints := opts.MaxEndpoints
-	if maxEndpoints <= 0 && opts.Fast {
-		maxEndpoints = 25
+	if maxEndpoints <= 0 {
+		maxEndpoints = defaultMaxEndpoints(mode, opts.Fast)
 	}
 
-	var scanEndpoint func(string, bool, bool)
+	var scanEndpoint func(string, bool)
+
+	scheduleFollowupScan := func(target string) {
+		if strings.TrimSpace(target) == "" {
+			return
+		}
+
+		select {
+		case followupSem <- struct{}{}:
+			defer func() { <-followupSem }()
+			scanEndpoint(target, false)
+		default:
+			fmt.Printf("[*] Follow-up scan queue saturated. Skipping %s\n", target)
+		}
+	}
 
 	// Wrap reportFinding to auto-scan newly discovered paths
 	wrappedReportFinding := func(f core.Finding) {
 		reportFinding(f)
 		if f.Type == "Path Discovered" || f.Type == "Sensitive Config/Backup Exposed" {
-			// Trigger a scan on this new endpoint, forcing it if it was already marked as scanned
-			go scanEndpoint(f.Target, false, true)
+			scheduleFollowupScan(f.Target)
 		}
 	}
 
@@ -164,63 +192,20 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		fmt.Printf("[*] Profile: %s | Lang=%s | WAF=%s\n", opts.Target, ctx.Language, ctx.WAF)
 	}
 
-	baselineURL := opts.Target
-	if !strings.HasSuffix(baselineURL, "/") {
-		baselineURL += "/"
-	}
-	baselineURL += "bhyakugan_baseline_test_404"
-
-	reqM, errReqM := http.NewRequest("GET", opts.Target, nil)
-	var respM *http.Response
-	var errM error
-	if errReqM == nil {
-		utils.SetDefaultHeaders(reqM, opts.Target)
-		respM, errM = client.Do(reqM)
-	} else {
-		errM = errReqM
-	}
-
-	var mainBody string
-	var mainHeaders http.Header
-	if errM == nil && respM != nil {
-		bodyM, _ := io.ReadAll(respM.Body)
-		mainBody = string(bodyM)
-		mainHeaders = respM.Header
-		respM.Body.Close()
-		recon_html.Scan(opts.Target, mainBody, wrappedReportFinding)
-	}
-
-	var wg sync.WaitGroup
-	run := func(name string, f func()) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			start := time.Now()
-			fmt.Printf("[*] [%s] started\n", name)
-			f()
-			fmt.Printf("[*] [%s] done (%.1fs)\n", name, time.Since(start).Seconds())
-		}()
-	}
-
 	scannedEndpoints := make(map[string]bool)
 	var endpointMu sync.Mutex
 	endpointLimitNotified := false
 
-	scanEndpoint = func(url string, isRoot bool, force bool) {
+	scanEndpoint = func(url string, isRoot bool) {
 		endpointMu.Lock()
-		if !isRoot && !force && maxEndpoints > 0 && len(scannedEndpoints) >= maxEndpoints {
-			if !endpointLimitNotified {
-				fmt.Printf("[*] Endpoint cap reached (%d). Skipping additional endpoints.\n", maxEndpoints)
-				endpointLimitNotified = true
-			}
+		allowed, notifyLimit := registerEndpointScan(scannedEndpoints, url, isRoot, maxEndpoints, &endpointLimitNotified)
+		if notifyLimit {
+			fmt.Printf("[*] Endpoint cap reached (%d). Skipping additional endpoints.\n", maxEndpoints)
+		}
+		if !allowed {
 			endpointMu.Unlock()
 			return
 		}
-		if !force && scannedEndpoints[url] {
-			endpointMu.Unlock()
-			return
-		}
-		scannedEndpoints[url] = true
 		endpointMu.Unlock()
 
 		var pWg sync.WaitGroup
@@ -267,7 +252,39 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		pWg.Wait()
 	}
 
-	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true, false) })
+	reqM, errReqM := http.NewRequest("GET", opts.Target, nil)
+	var respM *http.Response
+	var errM error
+	if errReqM == nil {
+		utils.SetDefaultHeaders(reqM, opts.Target)
+		respM, errM = client.Do(reqM)
+	} else {
+		errM = errReqM
+	}
+
+	var mainBody string
+	var mainHeaders http.Header
+	if errM == nil && respM != nil {
+		bodyM, _ := io.ReadAll(io.LimitReader(io.LimitReader(respM.Body, 5*1024*1024), 5*1024*1024))
+		mainBody = string(bodyM)
+		mainHeaders = respM.Header
+		respM.Body.Close()
+		recon_html.Scan(opts.Target, mainBody, wrappedReportFinding)
+	}
+
+	var wg sync.WaitGroup
+	run := func(name string, f func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			fmt.Printf("[*] [%s] started\n", name)
+			f()
+			fmt.Printf("[*] [%s] done (%.1fs)\n", name, time.Since(start).Seconds())
+		}()
+	}
+
+	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true) })
 	run("Directories", func() { directories.Scan(opts.Target, client, wrappedReportFinding) })
 	if !opts.Fast {
 		run("WebSocket", func() { websocket.Scan(opts.Target, client, wrappedReportFinding) })
@@ -285,10 +302,6 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 				maxDepth = 1
 			}
 
-			type CrawlJob struct {
-				URL   string
-				Depth int
-			}
 			queue := make(chan CrawlJob, 1000)
 			visited := make(map[string]bool)
 			var visitedMu sync.Mutex
@@ -315,7 +328,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 									defer scanWg.Done()
 									scanSem <- struct{}{}
 									defer func() { <-scanSem }()
-									scanEndpoint(l, false, false)
+									scanEndpoint(l, false)
 								}(current.URL)
 							}
 						}
@@ -338,7 +351,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 							utils.SetDefaultHeaders(req, current.URL)
 							resp, err := client.Do(req)
 							if err == nil {
-								body, _ := io.ReadAll(resp.Body)
+								body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 								bodyStr := string(body)
 								resp.Body.Close()
 								recon_html.Scan(current.URL, bodyStr, wrappedReportFinding)
@@ -360,7 +373,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 							reqMobile.Header.Set("User-Agent", mobileUA)
 							respMobile, errMobile := client.Do(reqMobile)
 							if errMobile == nil {
-								bodyMobile, _ := io.ReadAll(respMobile.Body)
+								bodyMobile, _ := io.ReadAll(io.LimitReader(io.LimitReader(respMobile.Body, 5*1024*1024), 5*1024*1024))
 								bodyMobileStr := string(bodyMobile)
 								respMobile.Body.Close()
 								recon_html.Scan(current.URL, bodyMobileStr, wrappedReportFinding)
@@ -378,11 +391,7 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 							if !visited[link] {
 								visited[link] = true
 								if current.Depth+1 <= maxDepth {
-									crawlWg.Add(1)
-									select {
-									case queue <- CrawlJob{URL: link, Depth: current.Depth + 1}:
-									default: // Prevent blocking if queue is full
-									}
+									enqueueCrawlJob(queue, CrawlJob{URL: link, Depth: current.Depth + 1}, &crawlWg)
 								}
 							}
 						}
@@ -460,6 +469,47 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	fmt.Printf("[*] Scan Complete for %s\n", opts.Target)
 }
 
+func defaultMaxEndpoints(mode string, fast bool) int {
+	if fast {
+		return 25
+	}
+
+	switch normalizeMode(mode) {
+	case "aggressive":
+		return 150
+	case "balanced":
+		return 100
+	default:
+		return 75
+	}
+}
+
+func enqueueCrawlJob(queue chan<- CrawlJob, job CrawlJob, crawlWg *sync.WaitGroup) bool {
+	crawlWg.Add(1)
+	select {
+	case queue <- job:
+		return true
+	default:
+		crawlWg.Done()
+		return false
+	}
+}
+
+func registerEndpointScan(scannedEndpoints map[string]bool, url string, isRoot bool, maxEndpoints int, endpointLimitNotified *bool) (bool, bool) {
+	if scannedEndpoints[url] {
+		return false, false
+	}
+	if !isRoot && maxEndpoints > 0 && len(scannedEndpoints) >= maxEndpoints {
+		if !*endpointLimitNotified {
+			*endpointLimitNotified = true
+			return false, true
+		}
+		return false, false
+	}
+	scannedEndpoints[url] = true
+	return true, false
+}
+
 func classifyConfidence(f core.Finding) string {
 	quality, explicitQuality := deriveEvidenceQuality(f)
 	baseConfidence := "probable"
@@ -484,6 +534,7 @@ func classifyConfidence(f core.Finding) string {
 		strings.Contains(d, "found output") ||
 		strings.Contains(d, "system file read") ||
 		strings.Contains(d, "source disclosure") ||
+		strings.Contains(d, "sensitive data leak") ||
 		strings.Contains(d, "introspection query enabled") {
 		baseConfidence = "confirmed"
 		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)

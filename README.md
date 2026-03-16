@@ -1,6 +1,6 @@
 # BHYAKUGAN (ビャクガン) 👁️
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.21-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey)](https://github.com/areksaxyz/bhyakugan)
 
@@ -17,115 +17,180 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah framework pemindaian backend otomatis berkecepatan tinggi yang dirancang khusus untuk Bug Bounty Hunter dan Security Researcher. Versi **4.0 (Autonomous Upgrade)** menghadirkan engine eksploitasi otomatis, dukungan multi-cloud, dan analisis endpoint JavaScript yang lebih agresif.
+**Bhyakugan** adalah scanner backend berbasis Go untuk recon, discovery, dan triage temuan keamanan pada target web. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist yang benar-benar ada di repo, bukan narasi rilis.
 
-## 🔥 Fitur Unggulan (v4.0)
+## 🔧 Tooling yang Dipakai
 
-### 🎯 Autonomous Exploit Engine
-*   **XPath XML Dumping**: Tidak hanya mendeteksi *boolean differential*, Bhyakugan sekarang secara otomatis melakukan *blind-dumping* nama node, jumlah elemen, dan atribut XML internal menggunakan teknik `count()`, `string-length()`, dan `substring()`.
-*   **Multi-Cloud Bucket Hunter**: Jangkauan diperluas ke **AWS S3, Google Cloud Storage (GCP), dan Azure Blob**. Engine secara otomatis melakukan **Sensitive File Hunting** (mencari `.env`, `backup.sql`, `users.json`) di dalam bucket publik dan menaikkan severity menjadi **Critical** jika ditemukan.
-*   **Active AI Secret Validator**: Menambahkan dukungan untuk **xAI (Grok)** dan **DeepSeek** API Keys dengan logic validasi saldo/quota otomatis.
+### Binary utama
+*   `./cmd/bhyakugan`: entrypoint scanner CLI.
+*   `./cmd/mockserver`: target lokal yang sengaja rentan untuk regression dan demo.
 
-### 🔍 Proactive JS API Mapper
-*   **Method Probing**: Setiap endpoint API yang ditemukan di dalam file JavaScript otomatis ditembak menggunakan berbagai method HTTP (`GET`, `POST`, `PUT`, `DELETE`) dengan *No-Redirect Client* untuk menemukan akses unauthenticated pada fitur tersembunyi.
-*   **Firebase Config Extraction**: Regex spesifik untuk mengekstrak objek konfigurasi Firebase lengkap untuk mempermudah identifikasi *misconfiguration* pada Firebase Installation API.
-*   **Smart Sourcemap Triage**: Membedakan antara library pihak ketiga (Low) dan kode internal aplikasi seperti `app.js.map` atau `admin.js.map` (Medium) untuk mengurangi noise.
+### Dependency eksternal
+*   `subfinder`: subdomain discovery pada mode wildcard.
+*   `assetfinder`: subdomain discovery tambahan pada mode wildcard.
+*   `httpx`: filtering host aktif pada hasil recon.
+*   `curl`: query `crt.sh` pada mode wildcard.
+*   `PayloadsAllTheThings` opsional: dipakai jika Anda menyediakan path lewat `-patt` atau `BHYAKUGAN_PATT`.
 
-### ✅ Enterprise-Grade Scanning
-*   **Enhanced Directory Wordlist**: Penambahan massal path sensitif termasuk `.bzr/`, `.hg/`, `WEB-INF/`, serta berbagai variasi file backup dan konfigurasi modern.
-*   **Open Redirect Module**: Deteksi otomatis celah redirect menggunakan parameter umum (`next`, `redir`, `url`) dengan payload bypass modern.
-*   **Unauthenticated File Upload**: Mencoba melakukan upload file `.php` dummy ke endpoint yang dicurigai sebagai uploader untuk memverifikasi proteksi filter.
+Jika tool di atas tidak ada, engine recon akan memberi warning eksplisit dan menjalankan bagian yang masih tersedia.
+
+## 🧩 Komponen Utama
+
+### Core
+*   Pipeline finding dengan enrichment, normalization, dedupe, dan HTML report.
+*   Scanner multi-mode: `strict`, `balanced`, `aggressive`, plus alias `bounty` dan `lab`.
+*   Crawl dan follow-up scan dengan endpoint cap otomatis per host.
+
+### Plugin yang ada di repo
+*   Recon dan discovery: directories, GraphQL, Git exposure, JS analyzer, HTML recon.
+*   Injection dan logic checks: SQLi, NoSQLi, SSRF, SSTI, XPath, XSLT, RCE, IDOR, proxy bypass, type juggling, prototype pollution.
+*   Auth dan token related: JWT, SAML, secrets validation.
+*   Exposure checks: file upload, open redirect, LFI, SSI, cloud storage exposure.
+
+### Artifact dan script
+*   `Makefile`: `build`, `test`, `fmt`, `vet`.
+*   `scripts/regression_local.sh`: build + package-level regression lokal.
+*   `scripts/localhost_fullstack_regression.sh`: fullstack localhost regression terhadap mockserver.
+*   `.github/workflows/ci.yml`: build, test, dan vet untuk push / pull request.
 
 ## 🛠️ Instalasi
 
 ### Prasyarat
-*   Go 1.21+
-*   Tools pendukung: `subfinder`, `assetfinder`, `httpx`
+*   Go 1.21
+*   Tool eksternal opsional untuk wildcard recon: `subfinder`, `assetfinder`, `httpx`, `curl`
 
 ### Build dari Source
 ```bash
 git clone https://github.com/areksaxyz/bhyakugan.git
 cd bhyakugan
-go build -o bhyakugan cmd/bhyakugan/main.go
+make build
 ```
+
+Alternatif manual:
+```bash
+go build -ldflags="-X main.version=4.0.0" -o bhyakugan ./cmd/bhyakugan
+```
+
+Gunakan package `./cmd/bhyakugan` sebagai target build resmi. Root module bukan target `go build .`.
 
 ## 📖 Penggunaan
 
-### 1. Scan Target Tunggal (Balanced - Recommended)
+### Scan Target Tunggal
 ```bash
 ./bhyakugan -target https://api.example.com -mode balanced
 ```
 
-### 2. Scan Wildcard (Consistent Mode)
-Alat akan memuat data lama dan menambah temuan baru secara otomatis.
+### Scan Wildcard
 ```bash
 ./bhyakugan -domain example.com -depth 1
 ```
 
-## 🛡️ Modul Deteksi Elite
-
-| Kategori | Fitur Utama |
-| :--- | :--- |
-| **Injections** | **XPath Auto-Dump**, SQLi, NoSQLi, SSRF, LFI, SSTI, PHP Type Juggling |
-| **Cloud Exposure** | **AWS S3, GCP Storage, Azure Blob** (with Sensitive File Hunting) |
-| **JS Analysis** | **API Probing**, XSSI, Sourcemap Leak, Firebase Config, CryptoJS Secrets |
-| **API Keys** | **xAI (Grok), DeepSeek**, Google, AWS, GitHub, OpenAI, dll (with Validation) |
-| **Vulns** | **Open Redirect**, **Unauthenticated File Upload**, JWT none-alg, SAML Stripping |
-
-## 🌐 Arsitektur & Alur Kerja (Workflow)
-
-Bhyakugan beroperasi dengan pipeline **Scan-Validate-Exploit-Score** yang terintegrasi secara otomatis:
-
-```mermaid
-graph TD
-    A[Input: Domain/URL] --> B{Tipe Input}
-    
-    subgraph "Phase 1: Intelligent Recon"
-    B -->|Wildcard| C[Subdomain Discovery: Parallel Engine]
-    C --> D[httpx: Live Host Filtering & Tech Profiling]
-    end
-    
-    subgraph "Phase 2: Discovery & Crawling"
-    B -->|Single URL| E[Core Scanner Engine]
-    D --> E
-    E --> F[Recursive Crawler & JS API Mapping]
-    E --> G[Directory Discovery: High-Density Wordlist]
-    end
-
-    subgraph "Phase 3: Vulnerability & Logic Analysis"
-    F & G --> H[Parallel Security Modules]
-    H --> H1[Injections: SQLi, NoSQLi, LFI, SSTI]
-    H --> H2[XPath Auto-Dump Engine]
-    H --> H3[JS Proactive Probing: GET/POST/PUT/DELETE]
-    H --> H4[Cloud Storage Hunter: AWS/GCP/Azure]
-    H --> H5[Auth Misconfig & Logic Bypasses]
-    end
-
-    subgraph "Phase 4: Autonomous Validation & Exploitation"
-    H1 --> V1[Behavioral Validation: 3-Way Baseline]
-    H2 --> V2[Blind XML Data Extraction]
-    H3 --> V3[Unauthenticated API Verification]
-    H4 --> V4[Sensitive File Hunting: .env, backup.sql]
-    H --> V5[Active AI Secret Validator: Grok/DeepSeek/Google]
-    end
-    
-    subgraph "Phase 5: Smart Reporting"
-    V1 & V2 & V3 & V4 & V5 --> I[Deduplication & Severity Scoring]
-    I --> J[Final HTML Report: Exploit Evidence Attached]
-    end
+### Dengan PayloadsAllTheThings
+```bash
+./bhyakugan -target https://api.example.com -mode strict -patt /path/to/PayloadsAllTheThings
 ```
 
-### Detil Alur Kerja:
+### Flag penting
+*   `-target`: target URL tunggal.
+*   `-domain`: domain untuk recon wildcard.
+*   `-mode`: `strict`, `balanced`, `aggressive`, `bounty`, `lab`.
+*   `-depth`: kedalaman crawling.
+*   `-threads`: concurrency worker.
+*   `-fast`: triage cepat, mengurangi modul berat.
+*   `-strict-validation`: drop finding heuristik-only.
+*   `-max-endpoints`: limit endpoint per host. `0` berarti auto by mode.
+*   `-patt`: root repo `PayloadsAllTheThings`.
 
-1.  **Reconnaissance (Wildcard Mode)**: Jika input berupa domain, Bhyakugan menjalankan `subfinder`, `assetfinder`, dan `crt.sh` secara paralel, melakukan deduplikasi, dan memfilter host aktif menggunakan `httpx`.
-2.  **Profiling & Baseline**: Sebelum memindai, engine melakukan *Profiling* (deteksi Bahasa, Framework, WAF) dan mengumpulkan *Baseline* respon normal untuk deteksi berbasis perilaku (*behavioral analysis*).
-3.  **Discovery Phase**:
-    *   **Directory Discovery**: Menyisir ribuan *hidden path* menggunakan wordlist yang telah ditingkatkan.
-    *   **JS API Mapper**: Mengekstrak endpoint API dari file JavaScript dan langsung melakukan **Probing Aktif** (mencoba method HTTP yang berbeda) untuk mencari akses tanpa otentikasi.
-4.  **Vulnerability Pipeline**: Menjalankan modul injeksi dan logika secara paralel. Modul khusus seperti **XPath Engine** akan otomatis beralih ke mode **Auto-Dump** jika differential terdeteksi.
-5.  **Multi-Cloud Hunter**: Jika ditemukan referensi cloud storage, engine akan memverifikasi izin bucket (AWS/GCP/Azure) dan secara agresif mencari file sensitif seperti `.env` atau `backup.sql`.
-6.  **Autonomous Validation**: Setiap temuan *secret* (API Key) divalidasi langsung ke provider (Google, Grok, DeepSeek, dll) untuk memastikan apakah key tersebut valid, memiliki saldo, atau bisa disalahgunakan.
-7.  **Smart Scoring & Reporting**: Hasil akhir dikonsolidasikan, dihilangkan duplikasinya, dan diberi skor berdasarkan tingkat eksploitasi nyata (bukan sekadar regex match) dalam laporan HTML yang komprehensif.
+## 🧭 Workflow Tool
+
+```mermaid
+flowchart TD
+    A[Input: -target atau -domain] --> B{Mode Input}
+    B -->|target| C[Profile target]
+    B -->|domain| D[Recon wildcard]
+    D --> D1[subfinder]
+    D --> D2[assetfinder]
+    D --> D3[crt.sh via curl]
+    D1 --> E[Deduplicate subdomains]
+    D2 --> E
+    D3 --> E
+    E --> F[Filter live hosts via httpx]
+    F --> G[Scan each live host]
+    C --> G
+
+    G --> H[Root endpoint scan]
+    G --> I[Directory discovery]
+    G --> J[Crawler + extracted links]
+    G --> K[JS analyzer + sourcemap + endpoint probing]
+    G --> L[Parallel plugin checks]
+
+    L --> L1[SQLi / NoSQLi / SSRF / SSTI]
+    L --> L2[XPath / XSLT / RCE / IDOR]
+    L --> L3[JWT / SAML / secrets]
+    L --> L4[Git / GraphQL / WebSocket / Proxy]
+    L --> L5[Open Redirect / File Upload / LFI / SSI]
+
+    H --> M[Finding enrichment]
+    I --> M
+    J --> M
+    K --> M
+    L --> M
+
+    M --> N[Dedupe + severity normalization]
+    N --> O[HTML report generation]
+    O --> P[bhyakugan-output/report_*.html]
+```
+
+### Single target
+1.  Profiling target.
+2.  Endpoint scan root.
+3.  Directory discovery dan crawler.
+4.  JS analysis dan plugin scan paralel.
+5.  Enrichment, dedupe, scoring, lalu HTML report.
+
+### Wildcard target
+1.  `subfinder`, `assetfinder`, dan `crt.sh` dijalankan paralel bila tersedia.
+2.  Hasil disaring dengan `httpx`.
+3.  Setiap live host dipindai dengan scanner yang sama seperti mode single target.
+
+## 🗂️ Wordlists dan Corpus
+
+Repo ini sekarang menyimpan corpus lokal di `wordlists/` dengan dua bentuk:
+
+*   Flat files untuk kompatibilitas lama.
+*   Tiered layout:
+    `wordlists/discovery`
+    `wordlists/verify`
+    `wordlists/aggressive`
+
+Contoh yang sudah ada:
+*   Discovery: `paths-common.txt`, `paths-admin.txt`, `paths-backups.txt`, `paths-api.txt`, `graphql-endpoints.txt`, `openredirect-params.txt`, `idor-params.txt`, `ssrf-params.txt`, `upload-params.txt`, `auth-params.txt`, `debug-params.txt`, `cloud-metadata-paths.txt`
+*   Verify: `graphql-safe-probes.txt`, `upload-safe-filenames.txt`, `upload-safe-content-types.txt`, `response-interesting-keywords.txt`, `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, `cors-interesting-headers.txt`, `file-interesting-names.txt`
+*   Aggressive: upload bypass filenames/extensions dan SQLi DB-specific lists
+
+Catatan: tidak semua file wordlist sudah di-wire otomatis ke semua plugin. Sebagian masih berfungsi sebagai corpus repo yang siap dipakai pada wiring berikutnya.
+
+## 📄 Output
+
+*   Report HTML ditulis ke `bhyakugan-output/`.
+*   Direktori output dibuat dengan permission privat (`0700`), file report/list dengan `0600`.
+*   HTML report sudah meng-escape field dinamis dan membatasi hyperlink ke `http/https`.
+
+## 🧪 Regression
+
+```bash
+make test
+./scripts/regression_local.sh
+./scripts/localhost_fullstack_regression.sh
+```
+
+`cmd/mockserver` dipakai sebagai target lokal untuk regression dan demo flow.
+
+## ⚠️ Catatan Praktis
+
+*   Mode wildcard bergantung pada tool eksternal. Coverage recon akan turun jika dependency tidak ada.
+*   Beberapa plugin masih heuristik dan lebih cocok untuk triage awal daripada keputusan final tanpa verifikasi manual.
+*   `-fast` dan endpoint cap otomatis lebih aman untuk target besar dibanding scan agresif penuh.
 
 ## ⚠️ Disclaimer
 Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.

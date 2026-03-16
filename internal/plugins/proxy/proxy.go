@@ -45,7 +45,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if strings.TrimSpace(baseURL) == "" {
 		return
 	}
-	
+
 	// 1. Reverse Proxy Bypass for Internal Paths (Only for root/base scan)
 	// We check if we can reach /admin by spoofing headers when it's otherwise blocked.
 	checkReverseProxyBypass(baseURL, client, onFound)
@@ -80,7 +80,7 @@ func checkReverseProxyBypass(baseURL string, client *http.Client, onFound func(c
 			continue
 		}
 		baseStatus := respBase.StatusCode
-		baseBody, _ := io.ReadAll(respBase.Body)
+		baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(respBase.Body, 5*1024*1024), 5*1024*1024))
 		respBase.Body.Close()
 		baseHash := hashBody(baseBody)
 
@@ -100,7 +100,7 @@ func checkReverseProxyBypass(baseURL string, client *http.Client, onFound func(c
 			if err != nil {
 				continue
 			}
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK {
@@ -162,7 +162,7 @@ func checkHeaderMutationTrust(url string, client *http.Client, onFound func(core
 		respBase.Body.Close()
 		return
 	}
-	baseBody, _ := io.ReadAll(respBase.Body)
+	baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(respBase.Body, 5*1024*1024), 5*1024*1024))
 	respBase.Body.Close()
 	baseHash := hashBody(baseBody)
 
@@ -186,7 +186,7 @@ func checkHeaderMutationTrust(url string, client *http.Client, onFound func(core
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 
 		attackHash := hashBody(body)
@@ -202,10 +202,10 @@ func checkHeaderMutationTrust(url string, client *http.Client, onFound func(core
 
 	if len(trustedHeaders) > 0 {
 		onFound(core.Finding{
-			Type:     "Improper Trust in HTTP Headers (Behavioral)",
-			Target:   url,
-			Detail:   fmt.Sprintf("Server response changed when mutating proxy-related headers. This suggests the server trusts and processes these headers, which could lead to bypasses if misconfigured.\nHeaders observed affecting response:\n- %s", strings.Join(trustedHeaders, "\n- ")),
-			Severity: "Low", // Behavioral trust is Low unless it bypasses an actual restriction (which checkReverseProxyBypass handles)
+			Type:       "Improper Trust in HTTP Headers (Behavioral)",
+			Target:     url,
+			Detail:     fmt.Sprintf("Server response changed when mutating proxy-related headers. This suggests the server trusts and processes these headers, which could lead to bypasses if misconfigured.\nHeaders observed affecting response:\n- %s", strings.Join(trustedHeaders, "\n- ")),
+			Severity:   "Low", // Behavioral trust is Low unless it bypasses an actual restriction (which checkReverseProxyBypass handles)
 			Confidence: "probable",
 		})
 	}
@@ -222,7 +222,7 @@ func checkNginxTraversal(baseURL string, client *http.Client, onFound func(core.
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		bodyStr := string(body)
 
@@ -255,7 +255,7 @@ func checkTemplateInjection(baseURL string, client *http.Client, onFound func(co
 
 	resp, err := client.Do(req)
 	if err == nil {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		if strings.Contains(string(body), "root:x:") {
 			onFound(core.Finding{

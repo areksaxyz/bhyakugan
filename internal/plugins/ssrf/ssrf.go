@@ -124,7 +124,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					return
 				}
 
-				bodyBytes, _ := io.ReadAll(resp.Body)
+				bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 				bodyLower := strings.ToLower(string(bodyBytes))
 
 				if !matchesSSRFFingerprint(pay.Detector, bodyLower) {
@@ -178,7 +178,7 @@ func fetchBodyLower(client *http.Client, target string) string {
 		return ""
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	return strings.ToLower(string(body))
 }
 

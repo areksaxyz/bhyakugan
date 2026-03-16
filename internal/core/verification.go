@@ -116,7 +116,7 @@ func (ve *VerificationEngine) performRequest(target string) (*http.Response, str
 		return nil, "", err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	return resp, string(body), nil
 }
 
@@ -140,5 +140,5 @@ func isSimilar(len1, len2 int) bool {
 		diff = -diff
 	}
 	// 2% tolerance for large pages or 15 bytes for small ones
-	return diff < (len2 / 50) || diff < 15
+	return diff < (len2/50) || diff < 15
 }

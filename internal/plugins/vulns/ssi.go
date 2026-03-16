@@ -29,14 +29,14 @@ func ScanSSI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 	for _, p := range SSIPayloads {
 		target := baseURL + p.Payload
-		
+
 		resp, err := client.Get(target)
 		if err != nil {
 			continue
 		}
 		defer resp.Body.Close()
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(body)
 		lowerBody := strings.ToLower(bodyStr)
 		payloadLower := strings.ToLower(p.Payload)

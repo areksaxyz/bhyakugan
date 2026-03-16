@@ -11,13 +11,24 @@ import (
 	"sync"
 )
 
+func checkToolAvailability(tool string) bool {
+	if _, err := exec.LookPath(tool); err != nil {
+		fmt.Printf("    [!] Missing dependency: %s not found in PATH\n", tool)
+		return false
+	}
+	return true
+}
+
 // RunSubdomainDiscovery runs subfinder and assetfinder in parallel and merges with existing results
 func RunSubdomainDiscovery(domain string) ([]string, error) {
 	fmt.Printf("[*] Running Subdomain Discovery on %s...\n", domain)
-	
+	subfinderAvailable := checkToolAvailability("subfinder")
+	assetfinderAvailable := checkToolAvailability("assetfinder")
+	curlAvailable := checkToolAvailability("curl")
+
 	outputDir := "bhyakugan-output"
 	historyFile := filepath.Join(outputDir, fmt.Sprintf("subdomains_%s.txt", strings.ReplaceAll(domain, ".", "_")))
-	
+
 	uniqueSubs := make(map[string]bool)
 	var mu sync.Mutex
 
@@ -42,6 +53,10 @@ func RunSubdomainDiscovery(domain string) ([]string, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if !subfinderAvailable {
+			fmt.Println("    [!] Skipping subfinder discovery because the binary is unavailable.")
+			return
+		}
 		fmt.Println("    -> Running subfinder...")
 		// Use -all to ensure all sources are used, even slow ones.
 		cmd := exec.Command("subfinder", "-d", domain, "-all", "-silent")
@@ -68,6 +83,10 @@ func RunSubdomainDiscovery(domain string) ([]string, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if !assetfinderAvailable {
+			fmt.Println("    [!] Skipping assetfinder discovery because the binary is unavailable.")
+			return
+		}
 		fmt.Println("    -> Running assetfinder...")
 		cmd2 := exec.Command("assetfinder", "--subs-only", domain)
 		output2, err := cmd2.CombinedOutput()
@@ -93,6 +112,10 @@ func RunSubdomainDiscovery(domain string) ([]string, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if !curlAvailable {
+			fmt.Println("    [!] Skipping crt.sh query because curl is unavailable.")
+			return
+		}
 		fmt.Println("    -> Querying crt.sh...")
 		// Simple crt.sh query using curl/grep to avoid heavy dependencies
 		// Output format: JSON or plain text. We'll use a simple approach.
@@ -146,12 +169,20 @@ func RunSubdomainDiscovery(domain string) ([]string, error) {
 }
 
 // FilterLiveHosts runs httpx on the list of subdomains
-func FilterLiveHosts(subdomains []string) ([]string, error) {
+func FilterLiveHosts(subdomains []string, threads int) ([]string, error) {
 	fmt.Println("[*] Filtering Live Hosts with httpx...")
-	
+	if !checkToolAvailability("httpx") {
+		return nil, fmt.Errorf("httpx not found in PATH")
+	}
+
+	concurrency := "50"
+	if threads > 0 {
+		concurrency = fmt.Sprintf("%d", threads)
+	}
+
 	// Add timeout to prevent hanging
-	cmd := exec.Command("httpx", "-silent", "-no-color", "-t", "50", "-rl", "100", "-timeout", "5")
-	
+	cmd := exec.Command("httpx", "-silent", "-no-color", "-t", concurrency, "-rl", "150", "-timeout", "5")
+
 	// Pass subdomains via Stdin
 	var stdin bytes.Buffer
 	for _, sub := range subdomains {

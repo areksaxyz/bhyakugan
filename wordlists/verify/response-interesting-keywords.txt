@@ -1,0 +1,37 @@
+error
+exception
+stack trace
+stacktrace
+traceback
+warning
+fatal
+panic
+debug
+internal server error
+unauthorized
+forbidden
+access denied
+token
+secret
+apikey
+api_key
+client_secret
+private_key
+password
+firebase
+aws_access_key_id
+authorization
+bearer
+session
+admin
+root
+metadata
+upload
+success
+graphql
+introspection
+swagger
+openapi
+actuator
+health
+metrics

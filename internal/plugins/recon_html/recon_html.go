@@ -10,13 +10,13 @@ import (
 var (
 	// CSRF Tokens in HTML Forms
 	csrfRegex = regexp.MustCompile(`(?i)<input\s+[^>]*type=["']hidden["'][^>]*name=["']([^"']*(?:csrf|token|xsrf|authenticity)[^"']*)["'][^>]*value=["']([^"']{8,})["']`)
-	
+
 	// Session IDs in HTML (more flexible for key=value or key: "value")
 	sessionRegex = regexp.MustCompile(`(?i)(?:sessionid|phpsessid|jsessionid|aspsessionid|connect\.sid|sid)\s*[:=]\s*["']?([^"'\s]{8,})["']?`)
-	
+
 	// Login Forms (using ?s for dot-matches-all)
 	loginFormRegex = regexp.MustCompile(`(?is)<form[^>]*>.*<input[^>]*type=["']password["'][^>]*>.*</form>`)
-	
+
 	// ReCaptcha
 	recaptchaRegex = regexp.MustCompile(`(?i)(?:g-recaptcha|google\.com/recaptcha|recaptcha\.net)`)
 
@@ -28,13 +28,13 @@ var (
 func Scan(url string, body string, onFound func(core.Finding)) {
 	// 1. Detect CSRF Tokens
 	detectCSRF(url, body, onFound)
-	
+
 	// 2. Detect Session IDs
 	detectSessionID(url, body, onFound)
-	
+
 	// 3. Detect Login Forms
 	detectLoginForm(url, body, onFound)
-	
+
 	// 4. Detect ReCaptcha
 	detectReCaptcha(url, body, onFound)
 

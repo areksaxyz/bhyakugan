@@ -18,8 +18,8 @@ func ExtractLinks(baseURL string, htmlBody string) []string {
 	}
 	baseHost := u.Host
 
-	// Regex to find hrefs (Even more robust version)
-	re := regexp.MustCompile(`(?i)href\s*=\s*["']?([^"' >]+)["']?`)
+	// Regex to find hrefs, srcs, and actions (More rigorous extraction)
+	re := regexp.MustCompile(`(?i)(?:href|src|action)\s*=\s*["']?([^"' >]+)["']?`)
 	matches := re.FindAllStringSubmatch(htmlBody, -1)
 
 	for _, match := range matches {
@@ -33,7 +33,9 @@ func ExtractLinks(baseURL string, htmlBody string) []string {
 
 			// Resolve relative URLs (Professional approach)
 			parsedRaw, errRaw := url.Parse(rawLink)
-			if errRaw != nil { continue }
+			if errRaw != nil {
+				continue
+			}
 			resolvedURL := u.ResolveReference(parsedRaw).String()
 
 			// Verify Domain Scope (Internal Only)

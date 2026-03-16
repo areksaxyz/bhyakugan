@@ -96,16 +96,16 @@ var Patterns = []SecretPattern{
 		Validator: nil,
 	},
 	{
-		Name:      "AWS Secret Access Key",
+		Name: "AWS Secret Access Key",
 		// Requiring a prefix or common assignment context to avoid entropy-only false positives
 		Pattern:   regexp.MustCompile(`(?i)(?:aws_secret|aws_secret_access_key|secret_key|secret_access_key).{0,20}\b([0-9a-zA-Z/+=]{40})\b`),
 		Severity:  "Info",
 		Validator: nil,
 	},
 	{
-		Name:     "Firebase Configuration",
-		Pattern:  regexp.MustCompile(`(?is)(?:firebase|config).*?apiKey\s*[:=]\s*["'](AIza[0-9A-Za-z\-_]{35,})["']`),
-		Severity: "High",
+		Name:      "Firebase Configuration",
+		Pattern:   regexp.MustCompile(`(?is)(?:firebase|config).*?apiKey\s*[:=]\s*["'](AIza[0-9A-Za-z\-_]{35,})["']`),
+		Severity:  "High",
 		Validator: nil, // Note: The generic Google API Key validator in exploitation_engine.go handles Firebase installation abuse testing
 	},
 	{
@@ -113,7 +113,7 @@ var Patterns = []SecretPattern{
 		Pattern:  regexp.MustCompile(`AIza[0-9A-Za-z\-_]+`),
 		Severity: "Info",
 		// Validation logic moved to exploitation_engine.go
-		Validator: nil, 
+		Validator: nil,
 	},
 	{
 		Name:     "Stripe Live Key",
@@ -231,7 +231,7 @@ func Scan(url string, client *http.Client, onFound func(core.Finding)) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	DetectInContent(bodyStr, url, onFound)
@@ -500,7 +500,7 @@ func verifyKey(key string, v *Validator) (string, string) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	if resp.StatusCode == v.ExpectedCode {

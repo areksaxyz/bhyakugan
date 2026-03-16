@@ -1,0 +1,7 @@
+text/plain
+image/png
+image/jpeg
+application/pdf
+text/csv
+application/json
+application/octet-stream

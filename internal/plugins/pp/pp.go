@@ -176,7 +176,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		if controlReq != nil {
 			respC, errC := client.Do(controlReq)
 			if errC == nil {
-				bC, _ := io.ReadAll(respC.Body)
+				bC, _ := io.ReadAll(io.LimitReader(io.LimitReader(respC.Body, 5*1024*1024), 5*1024*1024))
 				controlBodyStr = string(bC)
 				controlStatus = respC.StatusCode
 				respC.Body.Close()
@@ -189,7 +189,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		}
 		defer resp.Body.Close()
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(bodyBytes)
 
 		isVuln, severity, evidence := p.Check(resp, bodyStr, controlStatus, controlBodyStr)

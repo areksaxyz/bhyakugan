@@ -13,6 +13,7 @@ main
 # Output & Reports (SANGAT PENTING)
 bhyakugan-output/
 report_*.html
+*.report.html
 findings.txt
 subdomains.txt
 live_hosts.txt
@@ -27,6 +28,8 @@ final_*.log
 .gemini/
 debug/
 tmp/
+dist/
+resume.cfg
 .DS_Store
 
 # Go specific

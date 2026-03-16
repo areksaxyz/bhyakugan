@@ -1,0 +1,7 @@
+http://
+https://
+file://
+gopher://
+ftp://
+dict://
+ldap://

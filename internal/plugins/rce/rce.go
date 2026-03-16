@@ -92,7 +92,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		baseBodies[targetParam] = strings.ToLower(string(body))
 	}
@@ -161,7 +161,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 				}
 				defer resp.Body.Close()
 
-				body, _ := io.ReadAll(resp.Body)
+				body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 				bodyLower := strings.ToLower(string(body))
 				checkLower := strings.ToLower(payload.Check)
 
@@ -212,7 +212,7 @@ func timedRCERequest(client *http.Client, target string) timedHTTPResponse {
 		return timedHTTPResponse{duration: duration, statusCode: 0, err: err}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	return timedHTTPResponse{
 		duration:   duration,
 		statusCode: resp.StatusCode,

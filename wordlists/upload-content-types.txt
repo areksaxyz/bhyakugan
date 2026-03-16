@@ -1,0 +1,10 @@
+image/jpeg
+image/png
+image/gif
+image/svg+xml
+text/plain
+application/octet-stream
+application/x-php
+application/php
+text/html
+application/json

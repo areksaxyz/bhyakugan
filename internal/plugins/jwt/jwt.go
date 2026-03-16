@@ -67,7 +67,7 @@ func analyzeToken(token, url, source string, client *http.Client, onFound func(c
 	if strings.Contains(headerJSON, "\"jku\"") {
 		onFound(core.Finding{Type: "JWT Header Info", Target: url, Detail: "JKU header found (Potential SSRF/Key Injection)", Severity: "Medium"})
 	}
-	
+
 	// Check for RS256 (Algorithm Confusion Potential)
 	if strings.Contains(headerJSON, "\"alg\":\"RS256\"") || strings.Contains(headerJSON, "\"alg\": \"RS256\"") {
 		onFound(core.Finding{
@@ -134,17 +134,17 @@ func checkNoneAlgorithm(originalToken, url string, client *http.Client, onFound 
 	baseBody := ""
 	if errBase == nil && respBase != nil {
 		defer respBase.Body.Close()
-		b, _ := io.ReadAll(respBase.Body)
+		b, _ := io.ReadAll(io.LimitReader(io.LimitReader(respBase.Body, 5*1024*1024), 5*1024*1024))
 		baseBody = string(b)
 	}
 
 	variants := []string{"none", "None", "NONE", "nOnE"}
-	
+
 	for _, v := range variants {
 		// Create Header: {"alg":"v","typ":"JWT"}
 		header := fmt.Sprintf(`{"alg":"%s","typ":"JWT"}`, v)
 		noneHeader := base64.RawURLEncoding.EncodeToString([]byte(header))
-		
+
 		// Token without signature (Header.Payload.)
 		noneToken := noneHeader + "." + parts[1] + "."
 
@@ -152,20 +152,20 @@ func checkNoneAlgorithm(originalToken, url string, client *http.Client, onFound 
 		if err != nil {
 			continue
 		}
-		req.Header.Set("Authorization", "Bearer " + noneToken)
-		
+		req.Header.Set("Authorization", "Bearer "+noneToken)
+
 		resp, err := client.Do(req)
 		if err == nil {
 			defer resp.Body.Close()
 			// Heuristic: If 200 OK and response contains evidence of successful auth
 			if resp.StatusCode == 200 {
-				body, _ := io.ReadAll(resp.Body)
+				body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 				bodyStr := string(body)
-				
+
 				// FP Check: Must be different from baseline
 				// If the page is public, baseline is 200 OK. "None" token also getting 200 OK is normal (ignored).
 				// We need evidence that the token CHANGED the state (e.g. from "Login" to "Welcome User").
-				
+
 				if bodyStr == baseBody {
 					continue // Token was likely ignored
 				}

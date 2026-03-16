@@ -1,9 +1,9 @@
 package secrets
 
 import (
+	"github.com/yupiyy/bhyakugan/internal/core"
 	"strings"
 	"testing"
-	"github.com/yupiyy/bhyakugan/internal/core"
 )
 
 func TestDetectInContent_AWSPair(t *testing.T) {

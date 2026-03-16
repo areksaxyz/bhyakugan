@@ -23,7 +23,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 	if err != nil {
 		return
 	}
-	baseBody, _ := io.ReadAll(respBase.Body)
+	baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(respBase.Body, 5*1024*1024), 5*1024*1024))
 	respBase.Body.Close()
 	baseCode := respBase.StatusCode
 	baseLen := len(utils.NormalizeBody(string(baseBody)))
@@ -77,7 +77,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		if errT != nil {
 			continue
 		}
-		bodyT, _ := io.ReadAll(respT.Body)
+		bodyT, _ := io.ReadAll(io.LimitReader(io.LimitReader(respT.Body, 5*1024*1024), 5*1024*1024))
 		respT.Body.Close()
 		normBodyT := utils.NormalizeBody(string(bodyT))
 
@@ -90,7 +90,7 @@ func ScanOracleLengthFilter(baseURL string, client *http.Client, onFound func(co
 		if errF != nil {
 			continue
 		}
-		bodyF, _ := io.ReadAll(respF.Body)
+		bodyF, _ := io.ReadAll(io.LimitReader(io.LimitReader(respF.Body, 5*1024*1024), 5*1024*1024))
 		respF.Body.Close()
 		normBodyF := utils.NormalizeBody(string(bodyF))
 
@@ -164,7 +164,7 @@ Reason: %s`,
 
 func getRespLen(r *http.Response) int {
 	defer r.Body.Close()
-	b, _ := io.ReadAll(r.Body)
+	b, _ := io.ReadAll(io.LimitReader(io.LimitReader(r.Body, 5*1024*1024), 5*1024*1024))
 	return len(utils.NormalizeBody(string(b)))
 }
 

@@ -1,0 +1,10 @@
+/api/
+/v1/
+/v2/
+/graphql
+/internal/
+/admin/
+/auth/
+/upload/
+/user/
+/account/

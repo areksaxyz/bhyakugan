@@ -1,0 +1,7 @@
+shell.php
+shell.php.jpg
+shell.phtml
+shell.php5
+test.svg
+avatar.html
+proof.txt

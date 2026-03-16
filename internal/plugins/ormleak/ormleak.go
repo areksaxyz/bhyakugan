@@ -32,33 +32,33 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	respBase, errBase := client.Get(baseURL)
 	isRails := false
 	isDjango := false
-	
+
 	if errBase == nil {
 		// Tech Stack Detection
 		headers := respBase.Header
 		server := strings.ToLower(headers.Get("Server"))
 		poweredBy := strings.ToLower(headers.Get("X-Powered-By"))
 		cookies := strings.Join(headers.Values("Set-Cookie"), " ")
-		baseBody, _ := io.ReadAll(respBase.Body)
+		baseBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(respBase.Body, 5*1024*1024), 5*1024*1024))
 		baseBodyStr := strings.ToLower(string(baseBody))
 		respBase.Body.Close()
 
 		// Rails Fingerprints
-		if headers.Get("X-GitHub-Request-Id") != "" || 
-		   strings.Contains(server, "github") || 
-		   headers.Get("X-Runtime") != "" || 
-		   headers.Get("X-Rack-Cache") != "" ||
-		   strings.Contains(cookies, "_session_id") ||
-		   strings.Contains(baseBodyStr, "rails") || strings.Contains(baseBodyStr, "turbolinks") {
+		if headers.Get("X-GitHub-Request-Id") != "" ||
+			strings.Contains(server, "github") ||
+			headers.Get("X-Runtime") != "" ||
+			headers.Get("X-Rack-Cache") != "" ||
+			strings.Contains(cookies, "_session_id") ||
+			strings.Contains(baseBodyStr, "rails") || strings.Contains(baseBodyStr, "turbolinks") {
 			isRails = true
 		}
 
 		// Django Fingerprints
-		if strings.Contains(cookies, "csrftoken") || 
-		   strings.Contains(cookies, "sessionid") || 
-		   strings.Contains(poweredBy, "django") || 
-		   strings.Contains(server, "gunicorn") ||
-		   strings.Contains(baseBodyStr, "csrfmiddlewaretoken") || strings.Contains(baseBodyStr, "django") {
+		if strings.Contains(cookies, "csrftoken") ||
+			strings.Contains(cookies, "sessionid") ||
+			strings.Contains(poweredBy, "django") ||
+			strings.Contains(server, "gunicorn") ||
+			strings.Contains(baseBodyStr, "csrfmiddlewaretoken") || strings.Contains(baseBodyStr, "django") {
 			isDjango = true
 		}
 	} else {
@@ -72,16 +72,20 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 	for _, p := range ORMPayloads {
 		// Smart Skip: Don't test Django payloads on Rails targets and vice versa (optimization)
-		if isRails && strings.Contains(p.Name, "Django") { continue }
-		if isDjango && strings.Contains(p.Name, "Ransack") { continue }
+		if isRails && strings.Contains(p.Name, "Django") {
+			continue
+		}
+		if isDjango && strings.Contains(p.Name, "Ransack") {
+			continue
+		}
 
 		target := baseURL + p.Payload
 		resp, err := client.Get(target)
 		if err != nil {
 			continue
 		}
-		
-		bodyBytes, _ := io.ReadAll(resp.Body)
+
+		bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(bodyBytes)
 		resp.Body.Close()
 
@@ -90,8 +94,8 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 		controlURL := baseURL + strings.Replace(p.Payload, "adm", "bhyakugan_non_existent_xyz", 1)
 		respC, errC := client.Get(controlURL)
 		if errC == nil {
-			bodyC, _ := io.ReadAll(respC.Body)
-			
+			bodyC, _ := io.ReadAll(io.LimitReader(io.LimitReader(respC.Body, 5*1024*1024), 5*1024*1024))
+
 			// 1. Length Comparison
 			if len(bodyBytes) == len(bodyC) {
 				respC.Body.Close()
@@ -100,7 +104,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 			// 2. Content Key Comparison (If "admin" is in BOTH, it's just static text)
 			bodyCLower := strings.ToLower(string(bodyC))
-			if (strings.Contains(bodyCLower, "admin") || strings.Contains(bodyCLower, "success")) {
+			if strings.Contains(bodyCLower, "admin") || strings.Contains(bodyCLower, "success") {
 				respC.Body.Close()
 				continue // Keyword exists in control page -> Static content
 			}

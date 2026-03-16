@@ -1,0 +1,15 @@
+url
+uri
+path
+dest
+destination
+feed
+redirect
+image
+link
+src
+load
+file
+proxy
+api
+callback

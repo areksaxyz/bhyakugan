@@ -107,7 +107,7 @@ func loadPATTTTimePayloads() []SQLiPayload {
 }
 
 func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound func(core.Finding)) {
-	
+
 	lowerURL := strings.ToLower(baseURL)
 	if strings.HasSuffix(lowerURL, ".js") || strings.HasSuffix(lowerURL, ".css") ||
 		strings.HasSuffix(lowerURL, ".png") || strings.HasSuffix(lowerURL, ".jpg") ||
@@ -182,7 +182,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 				fuzzU.RawQuery = fuzzQ.Encode()
 				target := fuzzU.String()
 				if payload.Name == "SQLi Error (Single Quote)" {
-					
+
 				}
 				checkTarget(target, payload, client, baseline, baselineBodyLower, &isAlreadyVulnerable, &foundMu, onFound)
 				if isAlreadyVulnerable {
@@ -411,7 +411,7 @@ func performTimedRequest(client *http.Client, target string) timedHTTPResponse {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(bodyBytes)
 	return timedHTTPResponse{
 		duration:   duration,

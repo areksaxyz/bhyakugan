@@ -85,8 +85,8 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 		if err != nil {
 			continue
 		}
-		
-		body, _ := io.ReadAll(resp.Body)
+
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		bodyStr := string(body)
 
@@ -107,7 +107,7 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 			if len(parts) > 0 {
 				targetBrand = parts[0]
 			}
-			
+
 			detail := "Public listable bucket confirmed."
 			severity := "High"
 
@@ -120,10 +120,10 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 
 			for _, f := range sensitiveFiles {
 				fileUrl := baseURL + "/" + f
-				
+
 				fResp, fErr := client.Get(fileUrl)
 				if fErr == nil {
-					fBody, _ := io.ReadAll(fResp.Body)
+					fBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(fResp.Body, 5*1024*1024), 5*1024*1024))
 					fResp.Body.Close()
 					if fResp.StatusCode == 200 && len(fBody) > 0 {
 						bodyLower := strings.ToLower(string(fBody))

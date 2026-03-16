@@ -46,7 +46,7 @@ func checkSAMLEndpoint(target string, client *http.Client, onFound func(core.Fin
 	if err != nil {
 		return
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	resp.Body.Close()
 	if !shouldProbeSAMLEndpoint(target, resp.StatusCode, string(body)) {
 		return

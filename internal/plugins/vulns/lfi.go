@@ -108,7 +108,7 @@ func ScanLFI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if errBReq == nil {
 		utils.SetDefaultHeaders(bReq, baseURL)
 		if bResp, bErr := client.Do(bReq); bErr == nil {
-			bBody, _ := io.ReadAll(bResp.Body)
+			bBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(bResp.Body, 5*1024*1024), 5*1024*1024))
 			bResp.Body.Close()
 			baselineBody = strings.ToLower(string(bBody))
 		}
@@ -201,7 +201,7 @@ func checkLFIVector(target string, payload TraversalPayload, client *http.Client
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	if err != nil {
 		return
 	}

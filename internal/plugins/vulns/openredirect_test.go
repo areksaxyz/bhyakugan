@@ -21,11 +21,11 @@ func TestScanOpenRedirect(t *testing.T) {
 	defer ts.Close()
 
 	client := &http.Client{}
-	
+
 	t.Run("Vulnerable Parameter", func(t *testing.T) {
 		found := false
 		targetURL := ts.URL + "/redirect?url=ORIGINAL"
-		
+
 		ScanOpenRedirect(targetURL, client, func(f core.Finding) {
 			if f.Type == "Open Redirect" {
 				found = true
@@ -40,7 +40,7 @@ func TestScanOpenRedirect(t *testing.T) {
 	t.Run("Non-Vulnerable Parameter", func(t *testing.T) {
 		found := false
 		targetURL := ts.URL + "/redirect?other=ORIGINAL"
-		
+
 		ScanOpenRedirect(targetURL, client, func(f core.Finding) {
 			if f.Type == "Open Redirect" {
 				found = true
@@ -51,4 +51,25 @@ func TestScanOpenRedirect(t *testing.T) {
 			t.Error("Did not expect Open Redirect finding for unrelated parameter")
 		}
 	})
+}
+
+func TestIsTrustedRedirectTargetHostValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		location string
+		want     bool
+	}{
+		{name: "Reject Query Smuggling", location: "https://evil.com/?next=google.com", want: false},
+		{name: "Reject Host Suffix Attack", location: "https://google.com.evil.com", want: false},
+		{name: "Accept Google Root", location: "https://google.com", want: true},
+		{name: "Accept Google Subdomain", location: "https://accounts.google.com", want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTrustedRedirectTarget(tc.location); got != tc.want {
+				t.Fatalf("isTrustedRedirectTarget(%q) = %v, want %v", tc.location, got, tc.want)
+			}
+		})
+	}
 }

@@ -31,14 +31,18 @@ var (
 	secretConstant = regexp.MustCompile(`(?i)(?:var|const|let)\s+(\w*(?:token|secret|key|constant|auth|sign)\w*)\s*=\s*["']([^"']{4,})["']`)
 )
 
+const maxJSBody = 2 * 1024 * 1024
+
 // ScanJS downloads and analyzes a JS file
 func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(core.Finding)) {
 	if wg != nil {
 		defer wg.Done()
 	}
 
+	emit := dedupeJSFindings(onFound)
+
 	// PayPal-inspired XSSI Check (Alex Birsan)
-	checkXSSI(jsURL, client, onFound)
+	checkXSSI(jsURL, client, emit)
 
 	resp, err := client.Get(jsURL)
 	if err != nil {
@@ -46,8 +50,12 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, maxJSBody+1), maxJSBody+1))
 	if err != nil {
+		return
+	}
+	if len(bodyBytes) > maxJSBody {
+		fmt.Printf("[*] Skipping oversized JS File: %s\n", jsURL)
 		return
 	}
 	content := string(bodyBytes)
@@ -67,53 +75,53 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 		respMap, errMap := client.Do(reqMap)
 		if errMap == nil {
 			if respMap.StatusCode == 200 {
-			severity := "Low"
-			isLibrary := strings.Contains(jsURL, "jquery") || 
-						 strings.Contains(jsURL, "bootstrap") || 
-						 strings.Contains(jsURL, "node_modules") ||
-						 strings.Contains(jsURL, "vendor") ||
-						 strings.Contains(jsURL, "waves.min.js") ||
-						 strings.Contains(jsURL, "feather.min.js")
-			
-			if !isLibrary && (strings.Contains(jsURL, "app") || 
-							  strings.Contains(jsURL, "admin") || 
-							  strings.Contains(jsURL, "bundle") || 
-							  strings.Contains(jsURL, "main") ||
-							  strings.Contains(jsURL, "index")) {
-				severity = "Medium"
-			}
+				severity := "Low"
+				isLibrary := strings.Contains(jsURL, "jquery") ||
+					strings.Contains(jsURL, "bootstrap") ||
+					strings.Contains(jsURL, "node_modules") ||
+					strings.Contains(jsURL, "vendor") ||
+					strings.Contains(jsURL, "waves.min.js") ||
+					strings.Contains(jsURL, "feather.min.js")
 
-			fmt.Printf("[!] FOUND JS Sourcemap: %s [%s]\n", mapURL, severity)
-			onFound(core.Finding{
-				Type:     "Recon: JS Sourcemap",
-				Target:   mapURL,
-				Detail:   "Javascript sourcemap file discovered. Can be used to recover original source code.",
-				Severity: severity,
-			})
+				if !isLibrary && (strings.Contains(jsURL, "app") ||
+					strings.Contains(jsURL, "admin") ||
+					strings.Contains(jsURL, "bundle") ||
+					strings.Contains(jsURL, "main") ||
+					strings.Contains(jsURL, "index")) {
+					severity = "Medium"
+				}
+
+				fmt.Printf("[!] FOUND JS Sourcemap: %s [%s]\n", mapURL, severity)
+				emit(core.Finding{
+					Type:     "Recon: JS Sourcemap",
+					Target:   mapURL,
+					Detail:   "Javascript sourcemap file discovered. Can be used to recover original source code.",
+					Severity: severity,
+				})
+			}
+			respMap.Body.Close()
 		}
-		respMap.Body.Close()
-	}
 	}
 
 	// 1. Use centralized secrets detector
-	secrets.DetectInContent(content, jsURL, onFound)
+	secrets.DetectInContent(content, jsURL, emit)
 
 	// 2. Check Endpoints
-	checkRegexGroupAndProbe(content, apiEndpoint, "Full API Endpoint", jsURL, "Info", client, onFound)
-	checkRegexGroupAndProbe(content, apiPath, "API Path", jsURL, "Info", client, onFound)
-	checkRegexGroup(content, graphQL, "GraphQL-like Endpoint Detected", jsURL, "Info", onFound)
-	checkRegexGroup(content, adminPath, "Admin Path", jsURL, "Info", onFound)
+	checkRegexGroupAndProbe(content, apiEndpoint, "Full API Endpoint", jsURL, "Info", client, emit)
+	checkRegexGroupAndProbe(content, apiPath, "API Path", jsURL, "Info", client, emit)
+	checkRegexGroup(content, graphQL, "GraphQL-like Endpoint Detected", jsURL, "Info", emit)
+	checkRegexGroup(content, adminPath, "Admin Path", jsURL, "Info", emit)
 
 	// 3. Check Files
-	checkRegexGroup(content, sensitiveFiles, "Sensitive File Ref", jsURL, "Low", onFound)
+	checkRegexGroup(content, sensitiveFiles, "Sensitive File Ref", jsURL, "Low", emit)
 
 	// 4. Check for Token Leaks (XSSI candidates)
-	checkRegexGroup(content, tokenLeak, "Leaked Token in JS", jsURL, "Medium", onFound)
+	checkRegexGroup(content, tokenLeak, "Leaked Token in JS", jsURL, "Medium", emit)
 
 	// 5. Check for Client-Side Token Generation (New)
 	if cryptoJSLeak.MatchString(content) {
 		fmt.Printf("[!] HIGH: CryptoJS Usage with likely hardcoded secret in %s\n", jsURL)
-		onFound(core.Finding{
+		emit(core.Finding{
 			Type:       "Client-Side Crypto Leak",
 			Target:     jsURL,
 			Detail:     "CryptoJS usage detected. Combined with hardcoded constants, this may allow attackers to generate valid authentication tokens.",
@@ -121,7 +129,24 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 			Confidence: "probable",
 		})
 	}
-	checkSecretConstants(content, jsURL, onFound)
+	checkSecretConstants(content, jsURL, emit)
+}
+
+func dedupeJSFindings(onFound func(core.Finding)) func(core.Finding) {
+	seen := make(map[string]bool)
+	var mu sync.Mutex
+
+	return func(f core.Finding) {
+		key := strings.TrimSpace(f.Type) + "\n" + strings.TrimSpace(f.Target) + "\n" + strings.TrimSpace(f.Detail)
+		mu.Lock()
+		if seen[key] {
+			mu.Unlock()
+			return
+		}
+		seen[key] = true
+		mu.Unlock()
+		onFound(f)
+	}
 }
 
 func checkSecretConstants(content, source string, onFound func(core.Finding)) {
@@ -164,7 +189,7 @@ func checkXSSI(jsURL string, client *http.Client, onFound func(core.Finding)) {
 		return
 	}
 	defer resp1.Body.Close()
-	body1, _ := io.ReadAll(resp1.Body)
+	body1, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp1.Body, 5*1024*1024), 5*1024*1024))
 
 	// 2. Request WITHOUT cookies (anonymous)
 	req2, err := http.NewRequest("GET", jsURL, nil)
@@ -180,7 +205,7 @@ func checkXSSI(jsURL string, client *http.Client, onFound func(core.Finding)) {
 		return
 	}
 	defer resp2.Body.Close()
-	body2, _ := io.ReadAll(resp2.Body)
+	body2, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp2.Body, 5*1024*1024), 5*1024*1024))
 
 	// If body length is significantly different OR content changes, it might be dynamic JS
 	if len(body1) != len(body2) && len(body1) > 0 && len(body2) > 0 {
@@ -276,7 +301,7 @@ func checkRegexGroupAndProbe(content string, re *regexp.Regexp, name, source, se
 func probeEndpointMethods(url string, client *http.Client, onFound func(core.Finding)) {
 	methods := []string{"GET", "POST", "PUT", "DELETE"}
 	vulnerableMethods := []string{}
-	
+
 	// Create a client that doesn't follow redirects to avoid logging in
 	noRedirectClient := &http.Client{
 		Timeout: client.Timeout,
@@ -290,7 +315,7 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 		if err != nil {
 			continue
 		}
-		
+
 		utils.SetDefaultHeaders(req, url)
 		if method == "POST" || method == "PUT" {
 			req.Header.Set("Content-Type", "application/json")
@@ -302,12 +327,12 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 		if err != nil {
 			continue
 		}
-		
+
 		// If we get a 200 OK or 201 Created on an API endpoint without auth, it's highly suspicious
 		if resp.StatusCode == 200 || resp.StatusCode == 201 {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			bodyStr := strings.ToLower(string(body))
-			
+
 			// Filter out common false positives (e.g., standard login pages returning 200)
 			if !strings.Contains(bodyStr, "<html") && !strings.Contains(bodyStr, "login") && len(bodyStr) > 0 {
 				vulnerableMethods = append(vulnerableMethods, fmt.Sprintf("%s (%d)", method, resp.StatusCode))
@@ -318,10 +343,10 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 
 	if len(vulnerableMethods) > 0 {
 		onFound(core.Finding{
-			Type:     "Unauthenticated API Access",
-			Target:   url,
-			Detail:   fmt.Sprintf("Endpoint discovered in JS allows unauthenticated access via methods: %s", strings.Join(vulnerableMethods, ", ")),
-			Severity: "High",
+			Type:       "Unauthenticated API Access",
+			Target:     url,
+			Detail:     fmt.Sprintf("Endpoint discovered in JS allows unauthenticated access via methods: %s", strings.Join(vulnerableMethods, ", ")),
+			Severity:   "High",
 			Confidence: "probable",
 		})
 	}

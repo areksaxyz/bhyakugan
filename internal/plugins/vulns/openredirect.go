@@ -3,6 +3,7 @@ package vulns
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
@@ -19,6 +20,21 @@ var OpenRedirectPayloads = []string{
 	"//google.com/%2f..",
 	"https://google.com/%2f..",
 	"/%2f/google.com",
+}
+
+func isTrustedRedirectTarget(rawLocation string) bool {
+	location := strings.TrimSpace(rawLocation)
+	if location == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(location)
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	return host == "google.com" || strings.HasSuffix(host, ".google.com")
 }
 
 func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Finding)) {
@@ -49,7 +65,7 @@ func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Fin
 					continue
 				}
 				utils.SetDefaultHeaders(req, target)
-				
+
 				resp, err := noRedirectClient.Do(req)
 				if err != nil {
 					continue
@@ -57,18 +73,15 @@ func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Fin
 				defer resp.Body.Close()
 
 				location := resp.Header.Get("Location")
-				if location != "" {
-					// Check if location starts with or contains google.com after redirection
-					if strings.Contains(location, "google.com") {
-						onFound(core.Finding{
-							Type:       "Open Redirect",
-							Target:     target,
-							Detail:     fmt.Sprintf("Parameter '%s' is vulnerable to Open Redirect. Redirects to: %s", param, location),
-							Severity:   "Medium",
-							Confidence: "confirmed",
-						})
-						return // Found one, move to next parameter or finish
-					}
+				if isTrustedRedirectTarget(location) {
+					onFound(core.Finding{
+						Type:       "Open Redirect",
+						Target:     target,
+						Detail:     fmt.Sprintf("Parameter '%s' is vulnerable to Open Redirect. Redirects to: %s", param, location),
+						Severity:   "Medium",
+						Confidence: "confirmed",
+					})
+					return // Found one, move to next parameter or finish
 				}
 			}
 		}

@@ -15,7 +15,7 @@ import (
 type Payload struct {
 	Name    string
 	Payload string
-	Check   *regexp.Regexp 
+	Check   *regexp.Regexp
 }
 
 var CommonErrorIndicators = []string{
@@ -28,7 +28,7 @@ var CommonErrorIndicators = []string{
 
 var GenericPayloads = []Payload{
 	{"RCE (Basic)", ";%20id", regexp.MustCompile(`(uid=\d+\([a-zA-Z0-9_-]+\)\s+gid=\d+\()|(uid=0\(root\))`)},
-	{"RCE (Unicode)", "＆＆id", regexp.MustCompile(`(uid=\d+\([a-zA-Z0-9_-]+\)\s+gid=\d+\()|(uid=0\(root\))`)}, 
+	{"RCE (Unicode)", "＆＆id", regexp.MustCompile(`(uid=\d+\([a-zA-Z0-9_-]+\)\s+gid=\d+\()|(uid=0\(root\))`)},
 }
 
 func Scan(baseURL string, client *http.Client, payloadFile string, onFound func(core.Finding)) {
@@ -69,7 +69,7 @@ func Scan(baseURL string, client *http.Client, payloadFile string, onFound func(
 			if line == "" {
 				continue
 			}
-			
+
 			var target string
 			if strings.Contains(line, "{TARGET}") {
 				target = strings.ReplaceAll(line, "{TARGET}", baseURL)
@@ -88,7 +88,7 @@ func checkPayload(url string, p Payload, client *http.Client, onFound func(core.
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	if err != nil {
 		return
 	}
@@ -112,7 +112,7 @@ func checkCustomPayload(url string, payloadRaw string, client *http.Client, onFo
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	if err != nil {
 		return
 	}
@@ -127,7 +127,7 @@ func checkCustomPayload(url string, payloadRaw string, client *http.Client, onFo
 				Detail:   fmt.Sprintf("Payload: %s triggered indicator: %s", payloadRaw, indicator),
 				Severity: "Critical",
 			})
-			break 
+			break
 		}
 	}
 }

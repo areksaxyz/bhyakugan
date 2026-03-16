@@ -15,11 +15,15 @@ import (
 // NewHttpClient creates a new HTTP client with strict TLS verification.
 func NewHttpClient(timeout int) *http.Client {
 	tr := &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		DisableKeepAlives:   false,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   100,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     false,
 	}
 	client := &http.Client{
 		Transport: tr,
@@ -59,7 +63,7 @@ func InsecureFetch(target string, timeout time.Duration) (int, string, http.Head
 		return 0, "", nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	return resp.StatusCode, string(body), resp.Header, nil
 }
 

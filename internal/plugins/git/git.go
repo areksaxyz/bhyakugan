@@ -33,19 +33,19 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	}
 
 	// 2. Verify Content (Must contain 'ref: refs/')
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	if strings.Contains(bodyStr, "ref: refs/") {
 		fmt.Printf("[!] CRITICAL: Exposed Git Repository at %s\n", target)
-		
+
 		detail := "Git Repository exposed (.git/HEAD found). Source code likely accessible."
-		
+
 		// 3. Try to extract Remote Origin from config
 		configURL := baseURL + ".git/config"
 		respConf, errConf := client.Get(configURL)
 		if errConf == nil && respConf.StatusCode == 200 {
-			confBody, _ := io.ReadAll(respConf.Body)
+			confBody, _ := io.ReadAll(io.LimitReader(io.LimitReader(respConf.Body, 5*1024*1024), 5*1024*1024))
 			confStr := string(confBody)
 			respConf.Body.Close()
 

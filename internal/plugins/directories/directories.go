@@ -23,11 +23,16 @@ var CommonPaths = []DirCheck{
 	{".git/HEAD", "ref: refs/"},
 	{".git/config", "core"},
 	{".git/index", ""},
+	{".git/logs/HEAD", "commit"},
 	{".env", "="},
 	{".env.old", "="},
 	{".env.bak", "="},
 	{".env.php", "return ["},
 	{".env.example", "="},
+	{".env.dev", "="},
+	{".env.prod", "="},
+	{".env.local", "="},
+	{".env.test", "="},
 	{"backup/", ""},
 	{"backups/", ""},
 	{"admin/", ""},
@@ -39,6 +44,10 @@ var CommonPaths = []DirCheck{
 	{"api/", ""},
 	{"v1/", ""},
 	{"v2/", ""},
+	{"v3/", ""},
+	{"api/v1/", ""},
+	{"api/v2/", ""},
+	{"api/v3/", ""},
 	{"logs/", ""},
 	{".svn/entries", "dir"},
 	{".svn/wc.db", ""},
@@ -73,6 +82,7 @@ var CommonPaths = []DirCheck{
 	{"users.csv", ""},
 	{".ssh/id_rsa", "PRIVATE KEY"},
 	{".ssh/id_dsa", "PRIVATE KEY"},
+	{".ssh/id_ed25519", "PRIVATE KEY"},
 	{".ssh/authorized_keys", ""},
 	{"config/database.php", "return ["},
 	{".aws/credentials", "aws_access_key"},
@@ -97,16 +107,46 @@ var CommonPaths = []DirCheck{
 	{"deleteCompanyModules", ""},
 	{"addCompanyPermissions", ""},
 	{"deleteUser", ""},
+	{"swagger-ui.html", "swagger"},
+	{"swagger/v1/swagger.json", "swagger"},
+	{"v2/api-docs", "swagger"},
+	{"v3/api-docs", "openapi"},
+	{"api-docs", "openapi"},
+	{".bash_history", ""},
+	{".mysql_history", ""},
+	{"actuator/env", "propertySources"},
+	{"actuator/health", "UP"},
+	{"actuator/heapdump", ""},
+	{"actuator/", ""},
+	{"app.db", "SQLite format 3"},
+	{"server.py", "import "},
+	{"main.py", "import "},
+	{"app.py", "import "},
+	{"config.yml", ""},
+	{"config.yaml", ""},
+	{"application.yml", ""},
+	{"application.properties", ""},
+	{"database.yml", ""},
+	{".gitlab-ci.yml", "stages:"},
+	{".github/workflows/", ""},
+	{"api/contact", ""},
+	{"api/messages", ""},
+	{"api/v1/messages", ""},
+	{"api/admin/messages", ""},
+	{"api/chat", ""},
+	{"api/v1/chat", ""},
+	{"api/support/tickets", ""},
+	{"api/v1/contact", ""},
 }
 
 func isLikelyComposerLock(body string) bool {
-	return strings.Contains(body, "\"content-hash\":") && 
-		strings.Contains(body, "\"packages\":") && 
+	return strings.Contains(body, "\"content-hash\":") &&
+		strings.Contains(body, "\"packages\":") &&
 		strings.Contains(body, "\"name\":")
 }
 
 func isLikelyPackageLock(body string) bool {
-	return strings.Contains(body, "\"lockfileVersion\":") && 
+	return strings.Contains(body, "\"lockfileVersion\":") &&
 		strings.Contains(body, "\"dependencies\":")
 }
 
@@ -131,15 +171,16 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	var baselineFinalURL string
 
 	if err404 == nil {
-		body404, _ := io.ReadAll(resp404.Body)
+		body404, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp404.Body, 5*1024*1024), 5*1024*1024))
 		baselineBody = string(body404)
 		baselineLen = len(baselineBody)
 		baselineFinalURL = resp404.Request.URL.String()
 		resp404.Body.Close()
+		fmt.Printf("[DEBUG] BaselineLen: %d, randPath: %s\n", baselineLen, randPath)
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
+	sem := make(chan struct{}, 25)
 
 	for _, check := range CommonPaths {
 		wg.Add(1)
@@ -189,7 +230,8 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			}
 
 			if resp.StatusCode == 200 {
-				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("[DEBUG] Path hit: %s\n", target)
+				body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 				bodyStr := string(body)
 				bodyLen := len(bodyStr)
 				contentType := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -198,6 +240,9 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 
 				isHTML := strings.Contains(bodyLower, "<html") || strings.Contains(bodyLower, "<!doctype")
 				hasSecret := hasStrongSecretEvidence(bodyLower)
+				if hasSecret {
+					fmt.Printf("[DEBUG] Secret found in: %s\n", target)
+				}
 
 				// --- ADVANCED ANTI-FP LOGIC ---
 
@@ -310,6 +355,14 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 						findingType = "Critical Data Leak in Path"
 						confidence = "confirmed"
 						detail = "Path contains extremely sensitive information (API Keys, Passwords, or Private Keys) in the response body."
+
+						// Specific check for API Leaks (e.g., /api/contact leaking messages)
+						if strings.Contains(pathLower, "api/") && (strings.Contains(bodyLower, "\"message\":") || strings.Contains(bodyLower, "\"private_message\":")) {
+							findingType = "Sensitive Information Leak via API Call"
+							severity = "Critical"
+							confidence = "confirmed"
+							detail = "Sensitive data leak: Unauthenticated user can view private messages or sensitive data via this API endpoint, which should be restricted to the Admin Panel."
+						}
 					} else if strings.Contains(pathLower, ".sql") && isLikelySQLDump(bodyStr) {
 						severity = "High"
 						findingType = "Database Dump Exposed"
@@ -361,6 +414,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 						Severity:   severity,
 						Confidence: confidence,
 					})
+					fmt.Printf("[DEBUG] Final Finding: %s | %s | %s | %s\n", findingType, severity, confidence, target)
 				}
 			}
 		}(check)
@@ -380,6 +434,11 @@ func hasStrongSecretEvidence(bodyLower string) bool {
 		"sk-proj-",
 		"api_key=",
 		"db_password=",
+		"\"message\":",
+		"\"private_message\":",
+		"\"sender_id\":",
+		"\"chat_history\":",
+		"\"admin_messages\":",
 	}
 	for _, s := range indicators {
 		if strings.Contains(bodyLower, s) {

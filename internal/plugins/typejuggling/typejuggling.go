@@ -23,18 +23,22 @@ var JugglingPayloads = []JugglingPayload{
 }
 
 func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound func(core.Finding)) {
-	if ctx.Language != "php" && ctx.Language != "unknown" { return }
+	if ctx.Language != "php" && ctx.Language != "unknown" {
+		return
+	}
 
 	lowerBase := strings.ToLower(baseURL)
-	isAuthPath := strings.Contains(lowerBase, "login") || 
-				  strings.Contains(lowerBase, "auth") || 
-				  strings.Contains(lowerBase, "signin") || 
-				  strings.Contains(lowerBase, "user") ||
-				  strings.Contains(lowerBase, "session") ||
-				  strings.Contains(lowerBase, "admin") ||
-				  strings.Contains(lowerBase, "/vuln_")
+	isAuthPath := strings.Contains(lowerBase, "login") ||
+		strings.Contains(lowerBase, "auth") ||
+		strings.Contains(lowerBase, "signin") ||
+		strings.Contains(lowerBase, "user") ||
+		strings.Contains(lowerBase, "session") ||
+		strings.Contains(lowerBase, "admin") ||
+		strings.Contains(lowerBase, "/vuln_")
 
-	if !isAuthPath { return }
+	if !isAuthPath {
+		return
+	}
 
 	controlURL := baseURL
 	if strings.Contains(baseURL, "?") {
@@ -49,18 +53,18 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 	}
 	utils.SetDefaultHeaders(reqBase, controlURL)
 	baseResp, _ := client.Do(reqBase)
-	
+
 	baseLen := -1
 	baseBodyStr := ""
 	if baseResp != nil {
 		headers := baseResp.Header
-		if headers.Get("X-GitHub-Request-Id") != "" || 
-		   strings.Contains(strings.ToLower(headers.Get("Server")), "github") ||
-		   headers.Get("X-Runtime") != "" { 
+		if headers.Get("X-GitHub-Request-Id") != "" ||
+			strings.Contains(strings.ToLower(headers.Get("Server")), "github") ||
+			headers.Get("X-Runtime") != "" {
 			baseResp.Body.Close()
-			return 
+			return
 		}
-		b, _ := io.ReadAll(baseResp.Body)
+		b, _ := io.ReadAll(io.LimitReader(io.LimitReader(baseResp.Body, 5*1024*1024), 5*1024*1024))
 		baseBodyStr = strings.ToLower(string(b))
 		baseLen = len(b)
 		baseResp.Body.Close()
@@ -70,42 +74,62 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 	q := u.Query()
 	authParams := []string{"pass", "password", "hash", "secret", "token"}
 	testParams := make(map[string]string)
-	
+
 	if len(q) == 0 {
-		for _, ap := range authParams { testParams[ap] = "1" }
+		for _, ap := range authParams {
+			testParams[ap] = "1"
+		}
 	} else {
-		for param := range q { testParams[param] = q.Get(param) }
+		for param := range q {
+			testParams[param] = q.Get(param)
+		}
 	}
 
 	for _, p := range JugglingPayloads {
 		payloadQ, _ := url.ParseQuery(strings.TrimPrefix(p.Payload, "?"))
-		
+
 		for targetParam := range testParams {
 			fuzzU, _ := url.Parse(baseURL)
 			fuzzQ := fuzzU.Query()
-			for k, v := range testParams { fuzzQ.Set(k, v) }
-			for k, v := range payloadQ { fuzzQ.Set(k, v[0]) }
-			
+			for k, v := range testParams {
+				fuzzQ.Set(k, v)
+			}
+			for k, v := range payloadQ {
+				fuzzQ.Set(k, v[0])
+			}
+
 			fuzzU.RawQuery = fuzzQ.Encode()
 			target := fuzzU.String()
-			
+
 			req, err := http.NewRequest("GET", target, nil)
-			if err != nil { continue }
+			if err != nil {
+				continue
+			}
 			utils.SetDefaultHeaders(req, target)
 			resp, err := client.Do(req)
-			if err != nil { continue }
-			
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			if err != nil {
+				continue
+			}
+
+			bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			bodyStr := strings.ToLower(string(bodyBytes))
 			bodyLen := len(bodyBytes)
 			resp.Body.Close()
 
-			if bodyLen == baseLen { continue }
+			if bodyLen == baseLen {
+				continue
+			}
 			diff := bodyLen - baseLen
-			if diff < 0 { diff = -diff }
-			if diff < 50 { continue } 
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff < 50 {
+				continue
+			}
 
-			if strings.Contains(bodyStr, "incapsula") || strings.Contains(bodyStr, "request rejected") || strings.Contains(bodyStr, "firewall") { continue }
+			if strings.Contains(bodyStr, "incapsula") || strings.Contains(bodyStr, "request rejected") || strings.Contains(bodyStr, "firewall") {
+				continue
+			}
 
 			success := false
 			evidence := ""

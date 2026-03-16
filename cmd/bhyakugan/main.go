@@ -20,7 +20,7 @@ import (
 	"github.com/yupiyy/bhyakugan/internal/scanner"
 )
 
-const version = "3.7"
+var version = "4.0.0"
 
 func printBanner() {
 	banner := `
@@ -47,10 +47,11 @@ func main() {
 	depthPtr := flag.Int("depth", 1, "Kedalaman crawling (1 = page ini saja, 2+ = recursive)")
 	payloadsPtr := flag.String("payloads", "", "Path ke file wordlist kustom (Opsional)")
 	timeoutPtr := flag.Int("timeout", 10, "HTTP Timeout dalam detik")
+	threadsPtr := flag.Int("threads", 0, "Jumlah concurrent worker (0 = auto)")
 	modePtr := flag.String("mode", "balanced", "Mode scan: strict, balanced, aggressive, bounty, lab")
 	strictValidationPtr := flag.Bool("strict-validation", false, "Filter ketat: drop temuan heuristik-only")
 	fastPtr := flag.Bool("fast", false, "Profil triage cepat (mengurangi modul berat)")
-	maxEndpointsPtr := flag.Int("max-endpoints", 0, "Batas endpoint per host (0 = auto/unlimited)")
+	maxEndpointsPtr := flag.Int("max-endpoints", 0, "Batas endpoint per host (0 = auto by mode; fast=25, strict=75, balanced=100, aggressive=150)")
 	pattPtr := flag.String("patt", "", "Path ke repo PayloadsAllTheThings (opsional)")
 
 	flag.Parse()
@@ -130,7 +131,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		liveHosts, err = recon.FilterLiveHosts(subs)
+		liveHosts, err = recon.FilterLiveHosts(subs, *threadsPtr)
 		if err != nil {
 			fmt.Printf("[!] Error filtering live hosts: %v\n", err)
 			os.Exit(1)
@@ -143,6 +144,7 @@ func main() {
 			opts := scanner.Options{
 				Target:           host,
 				Timeout:          *timeoutPtr,
+				Threads:          *threadsPtr,
 				PayloadFile:      *payloadsPtr,
 				Depth:            *depthPtr,
 				SharedJS:         sharedJS,
@@ -159,6 +161,7 @@ func main() {
 		opts := scanner.Options{
 			Target:           *targetPtr,
 			Timeout:          *timeoutPtr,
+			Threads:          *threadsPtr,
 			PayloadFile:      *payloadsPtr,
 			Depth:            *depthPtr,
 			SharedJS:         &sync.Map{},
@@ -181,7 +184,8 @@ func saveReport(allFindings []core.Finding, liveHosts []string, mainTarget strin
 		return
 	}
 	outputDir := "bhyakugan-output"
-	_ = os.MkdirAll(outputDir, 0755)
+	_ = os.MkdirAll(outputDir, 0700)
+	_ = os.Chmod(outputDir, 0700)
 
 	safeTarget := strings.ReplaceAll(strings.ReplaceAll(mainTarget, "://", "_"), "/", "_")
 	reportName := filepath.Join(outputDir, fmt.Sprintf("report_%s.html", safeTarget))

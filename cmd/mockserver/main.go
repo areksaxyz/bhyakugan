@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+// mockserver is an intentionally vulnerable local test target used for regression and demo flows.
+
 type routeContent struct {
 	status      int
 	contentType string
@@ -36,6 +38,16 @@ var (
 	}
 
 	sensitiveRoutes = map[string]routeContent{
+		"/api/contact": {
+			status:      200,
+			contentType: "application/json",
+			body:        "{\"status\":\"success\",\"messages\":[{\"id\":1,\"sender\":\"user1\",\"message\":\"I have a bug in my account\"},{\"id\":2,\"sender\":\"admin\",\"private_message\":\"Your secret key is BHYAKUGAN-SECRET-KEY\"}]}",
+		},
+		"/api/messages": {
+			status:      200,
+			contentType: "application/json",
+			body:        "{\"chat_history\":[{\"id\":101,\"sender\":\"admin\",\"message\":\"Welcome to Admin Panel Support\"}]}",
+		},
 		"/.env": {
 			status:      200,
 			contentType: "text/plain; charset=utf-8",
@@ -254,6 +266,15 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/api/contact" {
+		writeJSON(w, 200, `{"status":"success","messages":[{"id":1,"sender":"user1","message":"I have a bug in my account"},{"id":2,"sender":"admin","private_message":"Your secret key is BHYAKUGAN-SECRET-KEY"}]}`)
+		return
+	}
+	if r.URL.Path == "/api/messages" {
+		writeJSON(w, 200, `{"chat_history":[{"id":101,"sender":"admin","message":"Welcome to Admin Panel Support"}]}`)
+		return
+	}
+
 	if served := maybeServeSensitiveFile(w, r); served {
 		return
 	}
@@ -310,7 +331,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRootPOST(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(r.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := strings.ToLower(string(body))
 
 	if strings.Contains(bodyStr, "__proto__") || strings.Contains(bodyStr, "constructor") {
@@ -422,7 +443,7 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 
 func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(r.Body, 5*1024*1024), 5*1024*1024))
 		if isNoSQLBody(strings.ToLower(string(body))) {
 			writeJSON(w, 200, `{"success":true,"auth":true,"dashboard":"/admin"}`)
 			return
@@ -527,7 +548,7 @@ func handleGraphQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(r.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(r.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := strings.TrimSpace(string(body))
 	lower := strings.ToLower(bodyStr)
 
@@ -1061,6 +1082,7 @@ func writeHTML(w http.ResponseWriter, status int, body string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body string) {
+	fmt.Printf("[DEBUG] writeJSON hit\n")
 	writeByType(w, status, "application/json", body)
 }
 
@@ -1114,20 +1136,19 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 405, `{"error":"Method not allowed"}`)
 		return
 	}
-	
+
 	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
 		writeJSON(w, 400, `{"error":"Unable to parse form"}`)
 		return
 	}
-	
+
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, 400, `{"error":"File not found in request"}`)
 		return
 	}
 	defer file.Close()
-	
+
 	writeJSON(w, 201, fmt.Sprintf(`{"status":"success", "message":"File %s uploaded successfully"}`, header.Filename))
 }
-

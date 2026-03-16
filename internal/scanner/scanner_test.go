@@ -2,10 +2,56 @@ package scanner
 
 import (
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yupiyy/bhyakugan/internal/core"
 )
+
+func TestEnqueueCrawlJobRollsBackWaitGroupWhenQueueIsFull(t *testing.T) {
+	queue := make(chan CrawlJob)
+	var wg sync.WaitGroup
+
+	if enqueued := enqueueCrawlJob(queue, CrawlJob{URL: "https://example.com/a", Depth: 1}, &wg); enqueued {
+		t.Fatal("expected enqueue to fail on full/unbuffered queue without consumer")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected wait group to be rolled back when enqueue fails")
+	}
+}
+
+func TestRegisterEndpointScanBlocksDuplicatesAndRespectsCap(t *testing.T) {
+	scanned := map[string]bool{
+		"https://example.com/root": true,
+	}
+	limitNotified := false
+
+	allowed, notify := registerEndpointScan(scanned, "https://example.com/root", false, 5, &limitNotified)
+	if allowed || notify {
+		t.Fatal("expected duplicate endpoint to be skipped without cap notification")
+	}
+
+	allowed, notify = registerEndpointScan(scanned, "https://example.com/next", false, 1, &limitNotified)
+	if allowed {
+		t.Fatal("expected endpoint cap to block non-root follow-up scan")
+	}
+	if !notify {
+		t.Fatal("expected first cap hit to request notification")
+	}
+	if !limitNotified {
+		t.Fatal("expected cap notification flag to be persisted")
+	}
+}
 
 func TestEvaluateFindingStrictRejectsProbable(t *testing.T) {
 	f := core.Finding{

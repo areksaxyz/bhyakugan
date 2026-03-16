@@ -96,3 +96,79 @@ func TestGenerateHTMLSeparatesReconObservations(t *testing.T) {
 		t.Fatal("expected vulnerability finding to remain in findings section")
 	}
 }
+
+func TestGenerateHTMLEscapesUntrustedContent(t *testing.T) {
+	tmp := t.TempDir()
+	reportPath := filepath.Join(tmp, "report.html")
+
+	findings := []core.Finding{
+		{
+			Type:       `<script>alert("type")</script>`,
+			Target:     `javascript:alert("target")`,
+			Detail:     `<img src=x onerror=alert("detail")>`,
+			Severity:   "High",
+			Confidence: "confirmed",
+		},
+	}
+
+	if err := GenerateHTML(reportPath, findings, nil, `<svg onload=alert("target")>`); err != nil {
+		t.Fatalf("GenerateHTML failed: %v", err)
+	}
+
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+
+	html := string(content)
+	if strings.Contains(html, `<script>alert("type")</script>`) {
+		t.Fatal("expected finding type to be HTML-escaped")
+	}
+	if strings.Contains(html, `<img src=x onerror=alert("detail")>`) {
+		t.Fatal("expected finding detail to be HTML-escaped")
+	}
+	if strings.Contains(strings.ToLower(html), `href="javascript:alert(`) {
+		t.Fatal("expected unsafe javascript URL to be stripped from report links")
+	}
+	if !strings.Contains(html, `&lt;script&gt;alert`) {
+		t.Fatal("expected escaped finding type to remain visible in report")
+	}
+}
+
+func TestGenerateHTMLWritesPrivateFile(t *testing.T) {
+	tmp := t.TempDir()
+	reportPath := filepath.Join(tmp, "report.html")
+
+	findings := []core.Finding{
+		{Type: "SQL Injection", Target: "https://example.com", Detail: "confirmed", Severity: "High", Confidence: "confirmed"},
+	}
+
+	if err := GenerateHTML(reportPath, findings, nil, "https://example.com"); err != nil {
+		t.Fatalf("GenerateHTML failed: %v", err)
+	}
+
+	info, err := os.Stat(reportPath)
+	if err != nil {
+		t.Fatalf("stat report failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("expected report permissions 0600, got %o", got)
+	}
+}
+
+func TestSaveListWritesPrivateFile(t *testing.T) {
+	tmp := t.TempDir()
+	listPath := filepath.Join(tmp, "targets.txt")
+
+	if err := SaveList(listPath, []string{"https://example.com"}); err != nil {
+		t.Fatalf("SaveList failed: %v", err)
+	}
+
+	info, err := os.Stat(listPath)
+	if err != nil {
+		t.Fatalf("stat list failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("expected list permissions 0600, got %o", got)
+	}
+}

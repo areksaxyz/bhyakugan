@@ -28,7 +28,7 @@ func TestProxyHeaderBypassAndBehavioralTrust(t *testing.T) {
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			path := req.URL.Path
-			
+
 			// Scenario 1: Bypass for /admin
 			if path == "/admin" {
 				if req.Header.Get("X-Forwarded-For") == "127.0.0.1" {

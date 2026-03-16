@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+command -v curl >/dev/null 2>&1 || { echo "curl required"; exit 1; }
+command -v go >/dev/null 2>&1 || { echo "go required"; exit 1; }
+
 PORT="${PORT:-18084}"
 TIMEOUT="${TIMEOUT:-8}"
 DEPTH="${DEPTH:-2}"
@@ -21,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[*] Building bhyakugan binary"
-GOCACHE=/tmp/go-build go build -o "$OUT_BIN" cmd/bhyakugan/main.go
+GOCACHE=/tmp/go-build go build -o "$OUT_BIN" ./cmd/bhyakugan
 
 echo "[*] Starting localhost mockserver on :$PORT"
 MOCKSERVER_PORT="$PORT" GOCACHE=/tmp/go-build go run cmd/mockserver/main.go >"$MOCK_LOG" 2>&1 &

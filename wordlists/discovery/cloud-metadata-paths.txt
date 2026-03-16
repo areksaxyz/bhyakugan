@@ -1,0 +1,7 @@
+/latest/meta-data/
+/latest/user-data/
+/metadata/instance
+/computeMetadata/v1/
+/metadata/v1/
+/instance-data/
+/openstack/latest/meta_data.json

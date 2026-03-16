@@ -56,7 +56,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				target += "/"
 			}
 			targetPath := strings.TrimPrefix(p, "/")
-			
+
 			// Avoid double appending (e.g. /graphql/graphql)
 			if strings.HasSuffix(baseURLTrim, "/"+targetPath) || baseURLTrim == targetPath {
 				return
@@ -104,7 +104,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 
 	if !validContentType {
 		// Exception: GraphiQL HTML interfaces
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(body)
 		if strings.Contains(strings.ToLower(bodyStr), "graphiql") || strings.Contains(strings.ToLower(bodyStr), "graphql playground") {
 			// Valid GraphiQL Interface
@@ -124,7 +124,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 		return
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	isGraphQL := false
@@ -187,7 +187,7 @@ func checkFieldBypass(url string, client *http.Client, onFound func(core.Finding
 		}
 		defer resp.Body.Close()
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(body)
 
 		// Check for successful data retrieval of sensitive-looking fields
@@ -248,9 +248,8 @@ func checkGidBOLA(url string, client *http.Client, onFound func(core.Finding)) {
 		}
 		defer resp.Body.Close()
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		bodyStr := string(body)
-		
 
 		// If we get "data" and "node" without errors, it's likely a BOLA/IDOR
 		if strings.Contains(bodyStr, `"data":`) && strings.Contains(bodyStr, `"node":`) && !strings.Contains(bodyStr, `"errors":`) {
@@ -292,7 +291,7 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	if strings.Contains(bodyStr, "__schema") && strings.Contains(bodyStr, "queryType") {
@@ -330,7 +329,7 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	bodyStr := string(body)
 
 	// If response is an array [...] with multiple results, batching is enabled

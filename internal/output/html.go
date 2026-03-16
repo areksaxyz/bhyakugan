@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"html/template"
 	"net/url"
 	"os"
 	"sort"
@@ -19,8 +20,47 @@ func cleanEndpoint(urlStr string) string {
 	return urlStr
 }
 
+func escapeHTML(s string) string {
+	return template.HTMLEscapeString(s)
+}
+
+func isSafeReportURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildReportLink(rawURL, display string) string {
+	escapedDisplay := escapeHTML(display)
+	if !isSafeReportURL(rawURL) {
+		return escapedDisplay
+	}
+
+	return fmt.Sprintf(`<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>`, escapeHTML(rawURL), escapedDisplay)
+}
+
+func createPrivateFile(filename string) (*os.File, error) {
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
 func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []string, target string) error {
-	f, err := os.Create(filename)
+	f, err := createPrivateFile(filename)
 	if err != nil {
 		return err
 	}
@@ -297,7 +337,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
                 <p style="margin: 8px 0 0 0; color: var(--text-muted); font-weight: 500;">Security Assessment Outcome</p>
             </div>
             <div class="header-meta">
-                <p>Target: <a href="%s" target="_blank">%s</a></p>
+                <p>Target: %s</p>
                 <p>Date: <strong>%s</strong></p>
                 <p>Live Hosts: <strong>%d</strong></p>
                 <p>Unique Exploitable: <strong>%d</strong></p>
@@ -311,7 +351,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
             <div class="card low"><h3>%d</h3><p>Low</p></div>
             <div class="card info"><h3>%d</h3><p>Info</p></div>
         </div>
-`, target, target, target, time.Now().Format("Jan 02, 2006 15:04:05 MST"), len(liveHosts), uniqueExploitable, stats["Critical"], stats["High"], stats["Medium"], stats["Low"], stats["Info"])
+`, escapeHTML(target), buildReportLink(target, target), time.Now().Format("Jan 02, 2006 15:04:05 MST"), len(liveHosts), uniqueExploitable, stats["Critical"], stats["High"], stats["Medium"], stats["Low"], stats["Info"])
 
 	if _, err := f.WriteString(htmlHead); err != nil {
 		return err
@@ -321,9 +361,9 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 	if len(endpointImpacts) > 0 {
 		f.WriteString(`<div class="impact-summary"><h2>Confirmed Impacts by Endpoint:</h2>`)
 		for endpoint, imps := range endpointImpacts {
-			f.WriteString(fmt.Sprintf(`<div class="impact-group"><h3>%s</h3><div class="impact-list">`, endpoint))
+			f.WriteString(fmt.Sprintf(`<div class="impact-group"><h3>%s</h3><div class="impact-list">`, escapeHTML(endpoint)))
 			for imp := range imps {
-				f.WriteString(fmt.Sprintf(`<div class="impact-item">%s</div>`, imp))
+				f.WriteString(fmt.Sprintf(`<div class="impact-item">%s</div>`, escapeHTML(imp)))
 			}
 			f.WriteString(`</div></div>`)
 		}
@@ -357,11 +397,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 				displayTarget = fnd.Target // Keep "90 Endpoints" label
 			}
 
-			targetCell := displayTarget
-			targetLower := strings.ToLower(strings.TrimSpace(fnd.Target))
-			if strings.HasPrefix(targetLower, "http://") || strings.HasPrefix(targetLower, "https://") {
-				targetCell = fmt.Sprintf(`<a href="%s" target="_blank">%s</a>`, fnd.Target, displayTarget)
-			}
+			targetCell := buildReportLink(fnd.Target, displayTarget)
 
 			score := exploitabilityScore(fnd)
 			row := fmt.Sprintf(`
@@ -371,7 +407,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 	                <td>%s</td>
 	                <td class="col-score">%d/100</td>
 	                <td class="col-detail">%s</td>
-	            </tr>`, fnd.Type, targetCell, strings.ToUpper(defaultConfidence(fnd.Confidence)), score, fnd.Detail)
+	            </tr>`, escapeHTML(fnd.Type), targetCell, escapeHTML(strings.ToUpper(defaultConfidence(fnd.Confidence))), score, escapeHTML(fnd.Detail))
 			if _, err := f.WriteString(row); err != nil {
 				return err
 			}
@@ -400,11 +436,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 			if strings.Contains(obs.Target, "Endpoints Detected") {
 				displayTarget = obs.Target
 			}
-			targetCell := displayTarget
-			targetLower := strings.ToLower(strings.TrimSpace(obs.Target))
-			if strings.HasPrefix(targetLower, "http://") || strings.HasPrefix(targetLower, "https://") {
-				targetCell = fmt.Sprintf(`<a href="%s" target="_blank">%s</a>`, obs.Target, displayTarget)
-			}
+			targetCell := buildReportLink(obs.Target, displayTarget)
 
 			row := fmt.Sprintf(`
             <tr>
@@ -412,7 +444,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
                 <td class="col-target">%s</td>
                 <td>%s</td>
                 <td class="col-detail">%s</td>
-            </tr>`, obs.Type, targetCell, strings.ToUpper(defaultConfidence(obs.Confidence)), obs.Detail)
+            </tr>`, escapeHTML(obs.Type), targetCell, escapeHTML(strings.ToUpper(defaultConfidence(obs.Confidence))), escapeHTML(obs.Detail))
 			if _, err := f.WriteString(row); err != nil {
 				return err
 			}
@@ -438,7 +470,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 }
 
 func SaveList(filename string, items []string) error {
-	f, err := os.Create(filename)
+	f, err := createPrivateFile(filename)
 	if err != nil {
 		return err
 	}

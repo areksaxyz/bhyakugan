@@ -301,6 +301,7 @@ func scoreEvidenceQuality(f core.Finding) evidenceQuality {
 		"no proof", "unverified", "heuristic", "potential ", "not direct", "signal only",
 	}
 
+	fmt.Printf("[DEBUG] Scoring: %s, deterministic: %v\n", text, hasAnyMarker(text, deterministicMarkers))
 	deterministic := hasAnyMarker(text, deterministicMarkers)
 	controlValidated := hasAnyMarker(text, controlMarkers)
 	responseDiff := hasAnyMarker(text, diffMarkers)

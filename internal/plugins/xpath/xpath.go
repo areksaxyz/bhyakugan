@@ -74,7 +74,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	baseURL = ensureTrailingSlash(baseURL)
 
 	params := []string{"id", "user", "name", "search", "query", "xml"}
-	
+
 	// Add parameters from the actual URL
 	if u, err := url.Parse(baseURL); err == nil {
 		for p := range u.Query() {
@@ -405,7 +405,7 @@ func collectBaselines(baseURL string, params []string, client *http.Client) map[
 		if err != nil {
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 		resp.Body.Close()
 		bodyStr := string(body)
 		bodyLower := strings.ToLower(bodyStr)
@@ -436,7 +436,7 @@ func requestPayload(baseURL, param, payload string, client *http.Client) (target
 	if err != nil {
 		return "", 0, "", "", utils.ResponseFingerprint{}, false
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	resp.Body.Close()
 	bodyStr := string(body)
 	bodyLower = strings.ToLower(bodyStr)

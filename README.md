@@ -17,7 +17,7 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah scanner backend berbasis Go untuk recon, discovery, dan triage temuan keamanan pada target web. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist yang benar-benar ada di repo, bukan narasi rilis.
+**Bhyakugan** adalah scanner backend berbasis Go untuk recon, discovery, dan triage temuan keamanan pada target web. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist.
 
 ## 🔧 Tooling yang Dipakai
 

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 var GraphQLEndpoints = []string{
@@ -22,21 +24,116 @@ var GraphQLEndpoints = []string{
 	"/explorer",
 }
 
-// Scan checks for GraphQL endpoints and misconfigurations
-func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
-	var wg sync.WaitGroup
+func mergedGraphQLEndpoints() []string {
+	endpoints := append([]string{}, GraphQLEndpoints...)
+	seen := make(map[string]bool, len(endpoints))
+	for _, endpoint := range endpoints {
+		seen[endpoint] = true
+	}
 
-	// Check if baseURL itself is a GraphQL endpoint
-	baseURLTrim := strings.TrimSuffix(baseURL, "/")
-	isLikelyEndpoint := false
-	for _, p := range GraphQLEndpoints {
-		if strings.HasSuffix(baseURLTrim, p) {
-			isLikelyEndpoint = true
-			break
+	extra := payloadrepo.LoadRepoLines(32,
+		"discovery/graphql-endpoints.txt",
+		"graphql-endpoints.txt",
+	)
+	for _, raw := range extra {
+		path := normalizeGraphQLEndpoint(raw)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		endpoints = append(endpoints, path)
+	}
+	return endpoints
+}
+
+func mergedGraphQLParams() []string {
+	params := []string{"query", "operationName", "variables"}
+	seen := make(map[string]bool, len(params))
+	for _, param := range params {
+		seen[strings.ToLower(param)] = true
+	}
+
+	extra := payloadrepo.LoadRepoLines(16,
+		"discovery/graphql-params.txt",
+		"graphql-params.txt",
+	)
+	for _, raw := range extra {
+		param := strings.TrimSpace(raw)
+		if param == "" {
+			continue
+		}
+		lower := strings.ToLower(param)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		params = append(params, param)
+	}
+	return params
+}
+
+func mergedGraphQLContentTypes() []string {
+	contentTypes := []string{"application/json", "application/graphql"}
+	seen := make(map[string]bool, len(contentTypes))
+	for _, contentType := range contentTypes {
+		seen[strings.ToLower(contentType)] = true
+	}
+
+	extra := payloadrepo.LoadRepoLines(16,
+		"verify/graphql-safe-probes.txt",
+	)
+	for _, raw := range extra {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if !strings.HasPrefix(value, "application/") || seen[value] {
+			continue
+		}
+		seen[value] = true
+		contentTypes = append(contentTypes, value)
+	}
+	return contentTypes
+}
+
+func isLikelyGraphQLTarget(raw string, endpoints, params []string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+
+	trimmedPath := strings.TrimSuffix(parsed.Path, "/")
+	for _, endpoint := range endpoints {
+		if strings.HasSuffix(trimmedPath, strings.TrimSuffix(endpoint, "/")) {
+			return true
 		}
 	}
 
-	if isLikelyEndpoint {
+	query := parsed.Query()
+	for _, param := range params {
+		if _, ok := query[param]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeGraphQLEndpoint(raw string) string {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
+// Scan checks for GraphQL endpoints and misconfigurations
+func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
+	var wg sync.WaitGroup
+	endpoints := mergedGraphQLEndpoints()
+	params := mergedGraphQLParams()
+
+	baseURLTrim := strings.TrimSuffix(baseURL, "/")
+	if isLikelyGraphQLTarget(baseURL, endpoints, params) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -45,7 +142,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	}
 
 	// 1. Endpoint Discovery
-	for _, path := range GraphQLEndpoints {
+	for _, path := range endpoints {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
@@ -100,7 +197,13 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 
 	// 2. Content-Type Check
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	validContentType := strings.Contains(contentType, "application/json") || strings.Contains(contentType, "application/graphql")
+	validContentType := false
+	for _, allowed := range mergedGraphQLContentTypes() {
+		if strings.Contains(contentType, strings.ToLower(allowed)) {
+			validContentType = true
+			break
+		}
+	}
 
 	if !validContentType {
 		// Exception: GraphiQL HTML interfaces
@@ -114,7 +217,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 				Target:     url,
 				Detail:     "GraphiQL or Playground UI detected.",
 				Severity:   "Info",
-				Confidence: "probable",
+				Confidence: core.ConfidenceProbable,
 			})
 			// Probe Introspection/Batching even if it's UI
 			checkIntrospection(url, client, onFound)
@@ -143,7 +246,7 @@ func checkEndpoint(url string, client *http.Client, onFound func(core.Finding)) 
 			Target:     url,
 			Detail:     "Valid GraphQL endpoint confirmed (JSON response with GraphQL structure).",
 			Severity:   "Info",
-			Confidence: "confirmed",
+			Confidence: core.ConfidenceConfirmed,
 		})
 		checkIntrospection(url, client, onFound)
 		checkBatching(url, client, onFound)
@@ -210,7 +313,7 @@ func checkFieldBypass(url string, client *http.Client, onFound func(core.Finding
 					Target:     url,
 					Detail:     detail + " Response preview: " + utils.Truncate(bodyStr, 200),
 					Severity:   "High",
-					Confidence: "confirmed",
+					Confidence: core.ConfidenceConfirmed,
 				})
 			}
 		}
@@ -261,7 +364,7 @@ func checkGidBOLA(url string, client *http.Client, onFound func(core.Finding)) {
 					Target:     url,
 					Detail:     fmt.Sprintf("Unauthorized object disclosure via GID (%s). Response: %s", q.Name, bodyStr),
 					Severity:   "Critical",
-					Confidence: "confirmed",
+					Confidence: core.ConfidenceConfirmed,
 				})
 			}
 		}
@@ -301,7 +404,7 @@ func checkIntrospection(url string, client *http.Client, onFound func(core.Findi
 			Target:     url,
 			Detail:     "Introspection is enabled. This is configuration exposure only; no auth bypass or data exposure proof was observed.",
 			Severity:   "Info",
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	}
 }
@@ -340,7 +443,7 @@ func checkBatching(url string, client *http.Client, onFound func(core.Finding)) 
 			Target:     url,
 			Detail:     "Batching enabled (may amplify brute-force or DoS attempts; exploit chain not validated).",
 			Severity:   "Low",
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	}
 }

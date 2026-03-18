@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 // Validator defines how to check if a key is live

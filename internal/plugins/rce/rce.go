@@ -13,8 +13,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type RCEPayload struct {
@@ -144,7 +144,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 							Target:     target,
 							Detail:     detail,
 							Severity:   "High",
-							Confidence: "probable",
+							Confidence: core.ConfidenceProbable,
 						})
 					}
 					return
@@ -175,7 +175,7 @@ func Scan(baseURL string, client *http.Client, ctx core.ScanContext, onFound fun
 							Target:     target,
 							Detail:     fmt.Sprintf("Confirmed via %s (direct output marker matched and absent in control response).", payload.Name),
 							Severity:   "Critical",
-							Confidence: "confirmed",
+							Confidence: core.ConfidenceConfirmed,
 						})
 					}
 				}

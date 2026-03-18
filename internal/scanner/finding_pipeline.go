@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var (
@@ -244,7 +244,7 @@ func attachEvidenceQuality(f core.Finding) core.Finding {
 	}
 	f.Detail = detail
 
-	if strings.TrimSpace(f.Confidence) == "" {
+	if strings.TrimSpace(string(f.Confidence)) == "" {
 		f.Confidence = confidenceFromEvidenceScore(q.Score)
 	}
 	return f
@@ -299,6 +299,7 @@ func scoreEvidenceQuality(f core.Finding) evidenceQuality {
 	}
 	weakMarkers := []string{
 		"no proof", "unverified", "heuristic", "potential ", "not direct", "signal only",
+		"manual verification required", "needs manual verification",
 	}
 
 	fmt.Printf("[DEBUG] Scoring: %s, deterministic: %v\n", text, hasAnyMarker(text, deterministicMarkers))
@@ -353,14 +354,14 @@ func evidenceTier(q evidenceQuality) string {
 	}
 }
 
-func confidenceFromEvidenceScore(score int) string {
+func confidenceFromEvidenceScore(score int) core.FindingConfidence {
 	switch {
 	case score >= 80:
-		return "confirmed"
+		return core.ConfidenceConfirmed
 	case score >= 45:
-		return "probable"
+		return core.ConfidenceProbable
 	default:
-		return "noisy"
+		return core.ConfidenceNoisy
 	}
 }
 

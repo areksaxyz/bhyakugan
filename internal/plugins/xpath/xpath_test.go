@@ -3,10 +3,11 @@ package xpath
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -136,4 +137,103 @@ func TestScanDetectsBooleanPairDifferential(t *testing.T) {
 	if !strings.Contains(strings.ToLower(findings[0].Detail), "boolean true/false differential confirmed") {
 		t.Fatalf("expected boolean differential evidence in detail, got: %s", findings[0].Detail)
 	}
+}
+
+func TestScanRejectsExactPathStaticTrap(t *testing.T) {
+	server := newXPathRouteServer()
+	defer server.Close()
+
+	var findings []core.Finding
+	Scan(server.URL+"/trap/sql-static", server.Client(), func(f core.Finding) {
+		findings = append(findings, f)
+	})
+
+	for _, f := range findings {
+		if f.Type == "XPath Injection" || f.Type == "XML Query Injection" {
+			t.Fatalf("expected no XPath finding for exact-path static trap, got %+v", f)
+		}
+	}
+}
+
+func TestScanRejectsExactPathReflectionTrap(t *testing.T) {
+	server := newXPathRouteServer()
+	defer server.Close()
+
+	var findings []core.Finding
+	Scan(server.URL+"/trap/reflection?q=payload", server.Client(), func(f core.Finding) {
+		findings = append(findings, f)
+	})
+
+	for _, f := range findings {
+		if f.Type == "XPath Injection" || f.Type == "XML Query Injection" {
+			t.Fatalf("expected no XPath finding for exact-path reflection trap, got %+v", f)
+		}
+	}
+}
+
+func TestScanPreservesExactPathForRealXPathTarget(t *testing.T) {
+	server := newXPathRouteServer()
+	defer server.Close()
+
+	var findings []core.Finding
+	Scan(server.URL+"/vuln/xpath?user=guest", server.Client(), func(f core.Finding) {
+		findings = append(findings, f)
+	})
+
+	if len(findings) != 1 {
+		t.Fatalf("expected one real XPath finding, got %d", len(findings))
+	}
+	if findings[0].Type != "XPath Injection" {
+		t.Fatalf("expected XPath Injection, got %q", findings[0].Type)
+	}
+}
+
+func newXPathRouteServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if hasXPathBypassTestValue(r) {
+			_, _ = w.Write([]byte(`<html><body><h1>admin account</h1><p>password list disclosed</p></body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body><h1>root page</h1></body></html>`))
+	})
+	mux.HandleFunc("/vuln/xpath", func(w http.ResponseWriter, r *http.Request) {
+		if hasXPathBypassTestValue(r) {
+			_, _ = w.Write([]byte(`<html><body><h1>admin account</h1><p>password list disclosed</p></body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body><h1>xpath page</h1></body></html>`))
+	})
+	mux.HandleFunc("/trap/sql-static", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body><h1>Trap SQL Static</h1><p>You have an error in your SQL syntax near static content.</p></body></html>`))
+	})
+	mux.HandleFunc("/trap/reflection", func(w http.ResponseWriter, r *http.Request) {
+		payload := firstNonEmptyTestValue(r.URL.Query().Get("q"), r.URL.Query().Get("input"), r.URL.Query().Get("ssi"), "<none>")
+		_, _ = w.Write([]byte(`<html><body><h1>Reflection Trap</h1><pre>` + payload + `</pre></body></html>`))
+	})
+	return httptest.NewServer(mux)
+}
+
+func hasXPathBypassTestValue(r *http.Request) bool {
+	for _, vals := range r.URL.Query() {
+		for _, v := range vals {
+			c := strings.ToLower(v)
+			if strings.Contains(c, "' or '1'='1") ||
+				strings.Contains(c, "//*") ||
+				strings.Contains(c, "count(/*)>0") ||
+				strings.Contains(c, "name()='username'") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func firstNonEmptyTestValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type SSRFPayload struct {
@@ -56,6 +57,28 @@ var SSRFPayloads = []SSRFPayload{
 	{"SSRF Gopher (DNS Leak)", "gopher://127.0.0.1:80/_GET%20/ HTTP/1.1", "passwd_file"},
 }
 
+func mergedSSRFParams() []string {
+	params := append([]string{}, SSRFParams...)
+	seen := make(map[string]bool, len(params))
+	for _, param := range params {
+		seen[strings.ToLower(param)] = true
+	}
+
+	extra := payloadrepo.LoadRepoLines(96,
+		"discovery/ssrf-params.txt",
+		"ssrf-params.txt",
+	)
+	for _, raw := range extra {
+		param := strings.ToLower(strings.TrimSpace(raw))
+		if param == "" || seen[param] {
+			continue
+		}
+		seen[param] = true
+		params = append(params, param)
+	}
+	return params
+}
+
 func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if isStaticAssetURL(baseURL) {
 		return
@@ -67,7 +90,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	testParams := make(map[string]string)
 	if len(q) == 0 {
 		if strings.Contains(baseURL, "redirect") || strings.Contains(baseURL, "fetch") || strings.Contains(baseURL, "url") {
-			for _, sp := range SSRFParams {
+			for _, sp := range mergedSSRFParams() {
 				testParams[sp] = "1"
 			}
 		}
@@ -221,7 +244,7 @@ func matchesSSRFFingerprint(detector, bodyLower string) bool {
 	}
 }
 
-func classifySSRFFinding(pay SSRFPayload) (severity, confidence, detail string) {
+func classifySSRFFinding(pay SSRFPayload) (severity string, confidence core.FindingConfidence, detail string) {
 	if metadataDetectors[pay.Detector] {
 		return "Medium", "probable",
 			fmt.Sprintf("%s metadata fingerprint observed (%s). control_validation=true (baseline/control clean), external_callback_validation=false (no DNS/OOB interaction log); treat as medium-confidence signal only until OOB callback or credential exposure is proven.",
@@ -237,7 +260,7 @@ func isSSRFSinkParam(param string) bool {
 	if p == "" {
 		return false
 	}
-	for _, candidate := range SSRFParams {
+	for _, candidate := range mergedSSRFParams() {
 		if p == candidate {
 			return true
 		}

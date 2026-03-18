@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/payloadrepo"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type SSTIPayload struct {
@@ -167,37 +167,63 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				res := ve.Verify(baseURL, targetParam, p.Payload, "bhyakugan_ssti_false_control")
 
 				if res.IsConfirmed {
-					// Extra content check for SSTI specifically
-					vFuzzU, _ := url.Parse(baseURL)
-					vFuzzQ := vFuzzU.Query()
-					for k, v := range testParams {
-						vFuzzQ.Set(k, v)
-					}
-					vFuzzQ.Set(targetParam, verifyPayload)
-					vFuzzU.RawQuery = vFuzzQ.Encode()
-					vTarget := vFuzzU.String()
+					detail := fmt.Sprintf("%s confirmed via arithmetic evaluation and differential control. %s", p.Name, res.Detail)
+					severity := "Critical"
 
-					vReq, _ := http.NewRequest("GET", vTarget, nil)
-					utils.SetDefaultHeaders(vReq, vTarget)
-					vResp, vErr := client.Do(vReq)
-					if vErr == nil {
-						vBodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(vResp.Body, 5*1024*1024), 5*1024*1024))
-						vResp.Body.Close()
-						vBodyStr := string(vBodyBytes)
-
-						if strings.Contains(vBodyStr, verifyCheck) && !strings.Contains(vBodyStr, verifyPayload) {
-							onFound(core.Finding{
-								Type:       "Server-Side Template Injection",
-								Target:     target,
-								Detail:     fmt.Sprintf("%s confirmed via VerificationEngine and double arithmetic check. %s", p.Name, res.Detail),
-								Severity:   "Critical",
-								Confidence: "confirmed",
-							})
-							return
-						}
+					if secondaryDetail, secondaryConfirmed := runSecondaryArithmeticCheck(baseURL, targetParam, verifyPayload, verifyCheck, testParams, client); secondaryConfirmed {
+						detail = detail + " " + secondaryDetail
+					} else {
+						severity = "High"
+						detail = detail + " Secondary arithmetic confirmation did not evaluate, but the primary arithmetic execution signal was verified."
 					}
+
+					onFound(core.Finding{
+						Type:       "Server-Side Template Injection",
+						Target:     target,
+						Detail:     detail,
+						Severity:   severity,
+						Confidence: core.ConfidenceConfirmed,
+					})
+					return
+				}
+
+				if res.IsSignal {
+					onFound(core.Finding{
+						Type:       "Server-Side Template Injection",
+						Target:     target,
+						Detail:     fmt.Sprintf("%s arithmetic evaluation signal observed, but only partial differential confirmation was established. %s", p.Name, res.Detail),
+						Severity:   "Medium",
+						Confidence: core.ConfidenceProbable,
+					})
+					return
 				}
 			}
 		}
 	}
+}
+
+func runSecondaryArithmeticCheck(baseURL, targetParam, verifyPayload, verifyCheck string, testParams map[string]string, client *http.Client) (string, bool) {
+	vFuzzU, _ := url.Parse(baseURL)
+	vFuzzQ := vFuzzU.Query()
+	for k, v := range testParams {
+		vFuzzQ.Set(k, v)
+	}
+	vFuzzQ.Set(targetParam, verifyPayload)
+	vFuzzU.RawQuery = vFuzzQ.Encode()
+	vTarget := vFuzzU.String()
+
+	vReq, _ := http.NewRequest("GET", vTarget, nil)
+	utils.SetDefaultHeaders(vReq, vTarget)
+	vResp, vErr := client.Do(vReq)
+	if vErr != nil {
+		return "", false
+	}
+	vBodyBytes, _ := io.ReadAll(io.LimitReader(io.LimitReader(vResp.Body, 5*1024*1024), 5*1024*1024))
+	vResp.Body.Close()
+	vBodyStr := string(vBodyBytes)
+
+	if strings.Contains(vBodyStr, verifyCheck) && !strings.Contains(vBodyStr, verifyPayload) {
+		return "Secondary arithmetic confirmation matched a distinct evaluated expression.", true
+	}
+	return "", false
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 func TestEnqueueCrawlJobRollsBackWaitGroupWhenQueueIsFull(t *testing.T) {
@@ -50,6 +50,203 @@ func TestRegisterEndpointScanBlocksDuplicatesAndRespectsCap(t *testing.T) {
 	}
 	if !limitNotified {
 		t.Fatal("expected cap notification flag to be persisted")
+	}
+}
+
+func TestResolveMaxEndpointsUsesAutoProfileDefaults(t *testing.T) {
+	testCases := []struct {
+		name string
+		mode string
+		fast bool
+		want int
+	}{
+		{name: "public", mode: "public", want: 75},
+		{name: "extended", mode: "extended", want: 100},
+		{name: "research", mode: "research", want: 150},
+		{name: "strict alias", mode: "strict", want: 75},
+		{name: "balanced alias", mode: "balanced", want: 100},
+		{name: "aggressive alias", mode: "aggressive", want: 150},
+		{name: "bounty alias", mode: "bounty", want: 75},
+		{name: "lab alias", mode: "lab", want: 150},
+		{name: "fast overrides mode", mode: "research", fast: true, want: 25},
+	}
+
+	for _, tc := range testCases {
+		if got := resolveMaxEndpoints(0, tc.mode, tc.fast); got != tc.want {
+			t.Fatalf("%s: expected %d, got %d", tc.name, tc.want, got)
+		}
+	}
+}
+
+func TestResolveMaxEndpointsKeepsExplicitValue(t *testing.T) {
+	if got := resolveMaxEndpoints(42, "balanced", false); got != 42 {
+		t.Fatalf("expected explicit cap to be preserved, got %d", got)
+	}
+}
+
+func TestNormalizeRuntimeModePrefersExposureCentricProfiles(t *testing.T) {
+	testCases := map[string]string{
+		"":           RuntimeModePublic,
+		"public":     RuntimeModePublic,
+		"extended":   RuntimeModeExtended,
+		"research":   RuntimeModeResearch,
+		"strict":     RuntimeModePublic,
+		"balanced":   RuntimeModeExtended,
+		"aggressive": RuntimeModeResearch,
+		"bounty":     RuntimeModePublic,
+		"lab":        RuntimeModeResearch,
+		"weird":      RuntimeModePublic,
+	}
+
+	for input, want := range testCases {
+		if got := NormalizeRuntimeMode(input); got != want {
+			t.Fatalf("NormalizeRuntimeMode(%q): expected %q, got %q", input, want, got)
+		}
+	}
+}
+
+func TestPlanForRuntimeModePublicKeepsExposurePluginsOnly(t *testing.T) {
+	plan := planForRuntimeMode(RuntimeModePublic)
+
+	for _, plugin := range []string{
+		pluginDirectories,
+		pluginGit,
+		pluginGraphQL,
+		pluginJSAnalyzer,
+		pluginReconHTML,
+		pluginS3,
+		pluginSecrets,
+	} {
+		if !plan.Enabled(plugin) {
+			t.Fatalf("expected public mode to enable %q", plugin)
+		}
+	}
+
+	for _, plugin := range []string{
+		pluginIDOR,
+		pluginJWT,
+		pluginNoSQLi,
+		pluginRCE,
+		pluginSQLi,
+		pluginSSRF,
+		pluginSSTI,
+		pluginTypeJuggle,
+		pluginVulns,
+		pluginWCD,
+		pluginXPath,
+	} {
+		if plan.Enabled(plugin) {
+			t.Fatalf("expected public mode to keep auth-heavy or deep-active plugin %q disabled", plugin)
+		}
+	}
+}
+
+func TestPlanForRuntimeModeResearchEnablesDeepActivePlugins(t *testing.T) {
+	plan := planForRuntimeMode(RuntimeModeResearch)
+
+	for _, plugin := range []string{
+		pluginDirectories,
+		pluginGit,
+		pluginGraphQL,
+		pluginJSAnalyzer,
+		pluginReconHTML,
+		pluginS3,
+		pluginSecrets,
+		pluginIDOR,
+		pluginJWT,
+		pluginNoSQLi,
+		pluginOpenRedirect,
+		pluginProxy,
+		pluginRCE,
+		pluginSQLi,
+		pluginSSRF,
+		pluginSSTI,
+		pluginTypeJuggle,
+		pluginVulns,
+		pluginWCD,
+		pluginXPath,
+		pluginXSLT,
+	} {
+		if !plan.Enabled(plugin) {
+			t.Fatalf("expected research mode to enable %q", plugin)
+		}
+	}
+}
+
+func TestEndpointExecutionPluginsPublicRootExcludeResearchOnlyFamilies(t *testing.T) {
+	exec := endpointExecutionPlugins(planForRuntimeMode(RuntimeModePublic), "https://example.com/api?q=1", true, false)
+
+	for _, plugin := range []string{
+		pluginSecrets,
+		pluginGraphQL,
+		pluginGit,
+		pluginS3,
+	} {
+		if !exec.Enabled(plugin) {
+			t.Fatalf("expected public root execution plan to run %q", plugin)
+		}
+	}
+
+	for _, plugin := range []string{
+		pluginJWT,
+		pluginNoSQLi,
+		pluginRCE,
+		pluginSQLi,
+		pluginSSRF,
+		pluginSSTI,
+		pluginTypeJuggle,
+		pluginVulns,
+		pluginWCD,
+		pluginXPath,
+		pluginSAML,
+	} {
+		if exec.Enabled(plugin) {
+			t.Fatalf("expected public root execution plan to keep %q disabled", plugin)
+		}
+	}
+}
+
+func TestEndpointExecutionPluginsResearchRootEnableActiveFamilies(t *testing.T) {
+	exec := endpointExecutionPlugins(planForRuntimeMode(RuntimeModeResearch), "https://example.com/login?id=1", true, false)
+
+	for _, plugin := range []string{
+		pluginSecrets,
+		pluginGraphQL,
+		pluginGit,
+		pluginS3,
+		pluginNoSQLi,
+		pluginRCE,
+		pluginSQLi,
+		pluginSSRF,
+		pluginSSTI,
+		pluginTypeJuggle,
+		pluginVulns,
+		pluginWCD,
+		pluginXPath,
+		pluginSAML,
+	} {
+		if !exec.Enabled(plugin) {
+			t.Fatalf("expected research root execution plan to run %q", plugin)
+		}
+	}
+}
+
+func TestTopLevelExecutionPluginsMatchModeIntent(t *testing.T) {
+	publicExec := topLevelExecutionPlugins(planForRuntimeMode(RuntimeModePublic), true, false)
+	if !publicExec.Enabled(pluginDirectories) || !publicExec.Enabled(pluginReconHTML) || !publicExec.Enabled(pluginJSAnalyzer) {
+		t.Fatal("expected public top-level plan to keep exposure/recon plugins enabled")
+	}
+	for _, plugin := range []string{pluginJWT, pluginORMLeak, pluginWebSocket} {
+		if publicExec.Enabled(plugin) {
+			t.Fatalf("expected public top-level plan to keep %q disabled", plugin)
+		}
+	}
+
+	researchExec := topLevelExecutionPlugins(planForRuntimeMode(RuntimeModeResearch), true, false)
+	for _, plugin := range []string{pluginDirectories, pluginReconHTML, pluginJSAnalyzer, pluginJWT, pluginORMLeak, pluginWebSocket} {
+		if !researchExec.Enabled(plugin) {
+			t.Fatalf("expected research top-level plan to enable %q", plugin)
+		}
 	}
 }
 
@@ -116,6 +313,21 @@ func TestEvaluateFindingBalancedKeepsProbable(t *testing.T) {
 	}
 }
 
+func TestEvaluateFindingPublicKeepsProbable(t *testing.T) {
+	f := core.Finding{
+		Type:       "Public Config Exposure",
+		Target:     "https://example.com/config.json",
+		Detail:     "Config exposure signal observed.",
+		Severity:   "Medium",
+		Confidence: "probable",
+	}
+
+	_, ok := EvaluateFinding("public", f)
+	if !ok {
+		t.Fatal("expected public mode to keep probable finding via balanced evidence profile")
+	}
+}
+
 func TestEvaluateFindingAggressiveKeepsNoisy(t *testing.T) {
 	f := core.Finding{
 		Type:       "Potential Header Leak",
@@ -128,6 +340,21 @@ func TestEvaluateFindingAggressiveKeepsNoisy(t *testing.T) {
 	_, ok := EvaluateFinding("aggressive", f)
 	if !ok {
 		t.Fatal("expected aggressive mode to keep noisy finding")
+	}
+}
+
+func TestEvaluateFindingResearchKeepsNoisy(t *testing.T) {
+	f := core.Finding{
+		Type:       "Potential Header Leak",
+		Target:     "https://example.com",
+		Detail:     "Verification failed due network jitter.",
+		Severity:   "Low",
+		Confidence: "noisy",
+	}
+
+	_, ok := EvaluateFinding("research", f)
+	if !ok {
+		t.Fatal("expected research mode to keep noisy finding via aggressive evidence profile")
 	}
 }
 

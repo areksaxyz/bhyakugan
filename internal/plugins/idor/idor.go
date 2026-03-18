@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var (
@@ -102,11 +102,11 @@ func checkIDOR(baseURL, param, originalVal string, client *http.Client, onFound 
 
 				if isData {
 					onFound(core.Finding{
-						Type:       "Potential IDOR",
+						Type:       "Object Reference Surface",
 						Target:     target,
-						Detail:     fmt.Sprintf("Parameter '%s' looks like an ID. Changing it from %s to %s returned a different but valid-looking response (len: %d vs baseline: %d). This may indicate an Insecure Direct Object Reference.", param, originalVal, tVal, len(bodyStr), baseLen),
-						Severity:   "Medium",
-						Confidence: "probable",
+						Detail:     fmt.Sprintf("Parameter '%s' behaves like a public object reference surface. Changing it from %s to %s returned a different unauthenticated structured response (len: %d vs baseline: %d). Treat this as an authorization-relevant hint only; authenticated context is required before claiming IDOR.", param, originalVal, tVal, len(bodyStr), baseLen),
+						Severity:   "Info",
+						Confidence: core.ConfidenceProbable,
 					})
 					return // Found for this param
 				}

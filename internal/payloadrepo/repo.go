@@ -16,6 +16,7 @@ var (
 
 func init() {
 	AutoDetectRoot()
+	AutoDetectWordlists()
 }
 
 func SetRoot(path string) {
@@ -68,8 +69,13 @@ func LoadLines(relPath string, max int) []string {
 		max = 100
 	}
 
+	root := Root()
+	if root == "" {
+		return nil
+	}
+
 	mu.RLock()
-	key := rootPath + "|" + relPath
+	key := root + "|" + relPath
 	if v, ok := cache[key]; ok {
 		out := clone(v)
 		mu.RUnlock()
@@ -77,11 +83,16 @@ func LoadLines(relPath string, max int) []string {
 	}
 	mu.RUnlock()
 
-	if Root() == "" {
-		return nil
-	}
+	abs := filepath.Join(root, relPath)
+	out := loadUniqueLinesFromFile(abs, max)
 
-	abs := filepath.Join(Root(), relPath)
+	mu.Lock()
+	cache[key] = clone(out)
+	mu.Unlock()
+	return out
+}
+
+func loadUniqueLinesFromFile(abs string, max int) []string {
 	f, err := os.Open(abs)
 	if err != nil {
 		return nil
@@ -102,10 +113,7 @@ func LoadLines(relPath string, max int) []string {
 		if strings.HasPrefix(line, "![") || strings.HasPrefix(line, "[!") {
 			continue
 		}
-		if len(line) > 220 {
-			continue
-		}
-		if seen[line] {
+		if len(line) > 220 || seen[line] {
 			continue
 		}
 		seen[line] = true
@@ -114,10 +122,6 @@ func LoadLines(relPath string, max int) []string {
 			break
 		}
 	}
-
-	mu.Lock()
-	cache[key] = clone(out)
-	mu.Unlock()
 	return out
 }
 

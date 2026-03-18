@@ -17,7 +17,7 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah scanner backend berbasis Go untuk recon, discovery, dan triage temuan keamanan pada target web. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist.
+**Bhyakugan** adalah scanner berbasis Go untuk **public exposure**, **sensitive artifact discovery**, dan **recon intelligence** pada target web tanpa asumsi akun/login. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist yang benar-benar ada di repo, bukan narasi rilis.
 
 ## 🔧 Tooling yang Dipakai
 
@@ -37,15 +37,17 @@ Jika tool di atas tidak ada, engine recon akan memberi warning eksplisit dan men
 ## 🧩 Komponen Utama
 
 ### Core
-*   Pipeline finding dengan enrichment, normalization, dedupe, dan HTML report.
-*   Scanner multi-mode: `strict`, `balanced`, `aggressive`, plus alias `bounty` dan `lab`.
+*   Pipeline finding dengan enrichment, normalization, dedupe, dan HTML report yang memisahkan validated exposure, probable sensitive signal, dan recon surface.
+*   Runtime mode exposure-first: `public` (default), `extended`, `research`.
+*   Alias kompatibilitas lama tetap diterima: `strict` -> `public`, `balanced` -> `extended`, `aggressive` -> `research`, `bounty` -> `public`, `lab` -> `research`.
 *   Crawl dan follow-up scan dengan endpoint cap otomatis per host.
 
-### Plugin yang ada di repo
-*   Recon dan discovery: directories, GraphQL, Git exposure, JS analyzer, HTML recon.
-*   Injection dan logic checks: SQLi, NoSQLi, SSRF, SSTI, XPath, XSLT, RCE, IDOR, proxy bypass, type juggling, prototype pollution.
-*   Auth dan token related: JWT, SAML, secrets validation.
-*   Exposure checks: file upload, open redirect, LFI, SSI, cloud storage exposure.
+### Plugin inti untuk identitas tool ini
+*   Public exposure dan artifact discovery: secrets, directories, Git exposure, GraphQL, JS analyzer, HTML recon.
+*   Surface dan misconfiguration signal: public storage exposure, proxy behavior, SSRF metadata/url-fetch surface, open redirect.
+*   Exposure-adjacent checks yang masih ada di repo: file upload, LFI, SSI, JWT, SAML, NoSQLi, SQLi, XPath, XSLT, RCE, IDOR, type juggling, prototype pollution.
+
+Prinsip utama repo ini sekarang adalah: temuan tanpa auth yang bisa dibuktikan langsung harus lebih diutamakan daripada claim eksploitasi aktif yang lemah.
 
 ### Artifact dan script
 *   `Makefile`: `build`, `test`, `fmt`, `vet`.
@@ -58,6 +60,7 @@ Jika tool di atas tidak ada, engine recon akan memberi warning eksplisit dan men
 ### Prasyarat
 *   Go 1.21
 *   Tool eksternal opsional untuk wildcard recon: `subfinder`, `assetfinder`, `httpx`, `curl`
+*   Module path repo ini: `github.com/areksaxyz/bhyakugan`
 
 ### Build dari Source
 ```bash
@@ -71,13 +74,18 @@ Alternatif manual:
 go build -ldflags="-X main.version=4.0.0" -o bhyakugan ./cmd/bhyakugan
 ```
 
+Atau install langsung dari module path:
+```bash
+go install github.com/areksaxyz/bhyakugan/cmd/bhyakugan@latest
+```
+
 Gunakan package `./cmd/bhyakugan` sebagai target build resmi. Root module bukan target `go build .`.
 
 ## 📖 Penggunaan
 
 ### Scan Target Tunggal
 ```bash
-./bhyakugan -target https://api.example.com -mode balanced
+./bhyakugan -target https://api.example.com -mode public
 ```
 
 ### Scan Wildcard
@@ -87,18 +95,18 @@ Gunakan package `./cmd/bhyakugan` sebagai target build resmi. Root module bukan 
 
 ### Dengan PayloadsAllTheThings
 ```bash
-./bhyakugan -target https://api.example.com -mode strict -patt /path/to/PayloadsAllTheThings
+./bhyakugan -target https://api.example.com -mode research -patt /path/to/PayloadsAllTheThings
 ```
 
 ### Flag penting
 *   `-target`: target URL tunggal.
 *   `-domain`: domain untuk recon wildcard.
-*   `-mode`: `strict`, `balanced`, `aggressive`, `bounty`, `lab`.
+*   `-mode`: `public`, `extended`, `research` dengan alias legacy `strict`, `balanced`, `aggressive`, `bounty`, `lab`.
 *   `-depth`: kedalaman crawling.
 *   `-threads`: concurrency worker.
 *   `-fast`: triage cepat, mengurangi modul berat.
 *   `-strict-validation`: drop finding heuristik-only.
-*   `-max-endpoints`: limit endpoint per host. `0` berarti auto by mode.
+*   `-max-endpoints`: limit endpoint per host. `0` berarti auto by mode: `public=75`, `extended=100`, `research=150`, `fast=25`.
 *   `-patt`: root repo `PayloadsAllTheThings`.
 
 ## 🧭 Workflow Tool
@@ -166,15 +174,60 @@ Repo ini sekarang menyimpan corpus lokal di `wordlists/` dengan dua bentuk:
 Contoh yang sudah ada:
 *   Discovery: `paths-common.txt`, `paths-admin.txt`, `paths-backups.txt`, `paths-api.txt`, `graphql-endpoints.txt`, `openredirect-params.txt`, `idor-params.txt`, `ssrf-params.txt`, `upload-params.txt`, `auth-params.txt`, `debug-params.txt`, `cloud-metadata-paths.txt`
 *   Verify: `graphql-safe-probes.txt`, `upload-safe-filenames.txt`, `upload-safe-content-types.txt`, `response-interesting-keywords.txt`, `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, `cors-interesting-headers.txt`, `file-interesting-names.txt`
-*   Aggressive: upload bypass filenames/extensions dan SQLi DB-specific lists
+*   Research profile corpus: upload bypass filenames/extensions dan SQLi DB-specific lists
 
 Catatan: tidak semua file wordlist sudah di-wire otomatis ke semua plugin. Sebagian masih berfungsi sebagai corpus repo yang siap dipakai pada wiring berikutnya.
+Saat direktori `wordlists/` lokal tersedia, engine otomatis memuat corpus untuk:
+*   discovery paths di plugin directories
+*   `verify/file-interesting-names.txt` untuk directories dan public storage exposure
+*   endpoint list GraphQL
+*   GraphQL request/content-type markers dari `graphql-params.txt` dan `graphql-safe-probes.txt`
+*   `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, dan `response-interesting-keywords.txt` di JS analyzer
+*   parameter list open redirect dan SSRF
+*   verify-safe upload probes, plus bypass filenames tambahan hanya pada profile `research` atau alias legacy `aggressive` / `lab`
+
+Sebagian corpus lain masih disimpan sebagai stok repo untuk ekspansi plugin berikutnya.
 
 ## 📄 Output
 
 *   Report HTML ditulis ke `bhyakugan-output/`.
 *   Direktori output dibuat dengan permission privat (`0700`), file report/list dengan `0600`.
 *   HTML report sudah meng-escape field dinamis dan membatasi hyperlink ke `http/https`.
+*   Report dibagi ke tiga bucket utama:
+    `Validated Public Exposures`
+    `Probable Sensitive Signals`
+    `Recon / Attack Surface`
+*   Dashboard atas memisahkan overview exposure/signal/recon dari severity validated exposure, supaya recon tidak bercampur dengan severity utama.
+
+### Contoh dashboard report
+
+```text
+Target: https://example.com
+Mode: public
+Validated Scope Count: 3
+
+Exposure Overview
+- Validated Exposures: 3
+- Probable Sensitive Signals: 7
+- Recon Surfaces: 42
+- Live Hosts: 581
+
+Validated Severity
+- Critical: 1
+- High: 1
+- Medium: 1
+- Low: 0
+
+Sections
+- Validated Public Exposures
+- Probable Sensitive Signals
+- Recon / Attack Surface
+```
+
+Interpretasi section:
+*   `Validated Public Exposures`: temuan yang bisa dibuktikan tanpa auth, misalnya config leak, backup exposure, public tooling, atau debug endpoint yang benar-benar bisa diakses.
+*   `Probable Sensitive Signals`: sinyal yang cukup kuat untuk investigasi manual, tetapi belum layak dipresentasikan sebagai validated exposure.
+*   `Recon / Attack Surface`: pemetaan permukaan seperti login form, robots, sourcemap, admin path, discovered API route, dan fingerprint lain yang berguna untuk assessment lanjutan.
 
 ## 🧪 Regression
 
@@ -186,10 +239,17 @@ make test
 
 `cmd/mockserver` dipakai sebagai target lokal untuk regression dan demo flow.
 
+Guardrail yang sekarang dikunci:
+*   report bucket dan summary tidak boleh saling bertentangan
+*   probable signal tidak boleh tampil sebagai confirmed
+*   trap localhost seperti reflection/static variation tidak boleh lolos sebagai XPath finding
+*   clustering root-cause XSLT/XPath pada localhost harus tetap satu row representatif
+*   header report harus menampilkan mode runtime yang benar
+
 ## ⚠️ Catatan Praktis
 
 *   Mode wildcard bergantung pada tool eksternal. Coverage recon akan turun jika dependency tidak ada.
-*   Beberapa plugin masih heuristik dan lebih cocok untuk triage awal daripada keputusan final tanpa verifikasi manual.
+*   Beberapa plugin aktif yang lebih eksploitasi-heavy masih ada di repo, tetapi hasil tanpa bukti kuat sengaja diposisikan sebagai signal atau recon, bukan validated exposure.
 *   `-fast` dan endpoint cap otomatis lebih aman untuk target besar dibanding scan agresif penuh.
 
 ## ⚠️ Disclaimer

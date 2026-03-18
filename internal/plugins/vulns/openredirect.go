@@ -6,8 +6,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 var OpenRedirectParams = []string{
@@ -20,6 +21,28 @@ var OpenRedirectPayloads = []string{
 	"//google.com/%2f..",
 	"https://google.com/%2f..",
 	"/%2f/google.com",
+}
+
+func mergedOpenRedirectParams() []string {
+	params := append([]string{}, OpenRedirectParams...)
+	seen := make(map[string]bool, len(params))
+	for _, param := range params {
+		seen[strings.ToLower(param)] = true
+	}
+
+	extra := payloadrepo.LoadRepoLines(64,
+		"discovery/openredirect-params.txt",
+		"openredirect-params.txt",
+	)
+	for _, raw := range extra {
+		param := strings.ToLower(strings.TrimSpace(raw))
+		if param == "" || seen[param] {
+			continue
+		}
+		seen[param] = true
+		params = append(params, param)
+	}
+	return params
 }
 
 func isTrustedRedirectTarget(rawLocation string) bool {
@@ -51,7 +74,7 @@ func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Fin
 		},
 	}
 
-	for _, param := range OpenRedirectParams {
+	for _, param := range mergedOpenRedirectParams() {
 		if strings.Contains(strings.ToLower(baseURL), param+"=") {
 			for _, payload := range OpenRedirectPayloads {
 				// Inject payload into the parameter
@@ -79,7 +102,7 @@ func ScanOpenRedirect(baseURL string, client *http.Client, onFound func(core.Fin
 						Target:     target,
 						Detail:     fmt.Sprintf("Parameter '%s' is vulnerable to Open Redirect. Redirects to: %s", param, location),
 						Severity:   "Medium",
-						Confidence: "confirmed",
+						Confidence: core.ConfidenceConfirmed,
 					})
 					return // Found one, move to next parameter or finish
 				}

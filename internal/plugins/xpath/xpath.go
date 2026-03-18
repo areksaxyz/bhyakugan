@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type XPathPayload struct {
@@ -34,7 +34,7 @@ type xpathEvidence struct {
 	status        int
 	signal        string
 	severity      string
-	confidence    string
+	confidence    core.FindingConfidence
 	deterministic bool
 	baseHash      string
 	attackHash    string
@@ -71,7 +71,6 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	if strings.TrimSpace(baseURL) == "" {
 		return
 	}
-	baseURL = ensureTrailingSlash(baseURL)
 
 	params := []string{"id", "user", "name", "search", "query", "xml"}
 
@@ -168,7 +167,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				Target:     canonicalEndpoint(baseURL),
 				Detail:     "Endpoint consistently returns authentication gate behavior (302/401/403 with login/auth redirect patterns). Injection validation skipped until authenticated context is provided.",
 				Severity:   "Info",
-				Confidence: "noisy",
+				Confidence: core.ConfidenceNoisy,
 			})
 		}
 		return
@@ -190,7 +189,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	})
 }
 
-func evaluateXPathSignal(p XPathPayload, status int, bodyLower string, base xpathBaseline) (signal, severity, confidence string, deterministic, matched bool) {
+func evaluateXPathSignal(p XPathPayload, status int, bodyLower string, base xpathBaseline) (signal, severity string, confidence core.FindingConfidence, deterministic, matched bool) {
 	if strings.Contains(bodyLower, strings.ToLower(p.Payload)) {
 		return "", "", "", false, false
 	}
@@ -239,9 +238,9 @@ func buildSummaryDetail(affected map[string]bool, reps []xpathEvidence, all []xp
 		b.WriteString(" - Authentication filter bypass\n")
 		b.WriteString(" - XML data enumeration\n")
 	case proofDepth == 2:
-		b.WriteString("Root Cause: XML Query Parser Error Disclosure\n")
+		b.WriteString("Root Cause: XML Query Differential Signal\n")
 		b.WriteString("Impact:\n")
-		b.WriteString(" - Deterministic XPath parser error signal\n")
+		b.WriteString(" - Deterministic response differential or parser-error signal\n")
 		b.WriteString(" - Manual exploitation confirmation required\n")
 	default:
 		b.WriteString("Root Cause: XML Query Handling Anomaly (Heuristic Signal)\n")
@@ -289,17 +288,24 @@ func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBa
 			}
 
 			res := ve.Verify(baseURL, param, tPayload, fPayload)
-			if res.IsConfirmed {
-				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
+			if res.IsSignal {
+				signal := res.Detail
+				severity := "Medium"
+				deterministic := false
+				if res.IsConfirmed {
+					signal += RunExploitEngine(baseURL, param, base, t.target, client)
+					severity = "High"
+					deterministic = true
+				}
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Boolean Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        res.Detail + exploitResults,
-					severity:      "High",
+					signal:        signal,
+					severity:      severity,
 					confidence:    res.Confidence,
-					deterministic: true,
+					deterministic: deterministic,
 					baseHash:      shortHash(base.bodyHash),
 					attackHash:    shortHash(t.bodyHash),
 				})
@@ -320,17 +326,24 @@ func analyzeDeterministicPairEvidence(param string, baseURL string, base xpathBa
 			}
 
 			res := ve.Verify(baseURL, param, tPayload, fPayload)
-			if res.IsConfirmed {
-				exploitResults := RunExploitEngine(baseURL, param, base, t.target, client)
+			if res.IsSignal {
+				signal := res.Detail
+				severity := "Medium"
+				deterministic := false
+				if res.IsConfirmed {
+					signal += RunExploitEngine(baseURL, param, base, t.target, client)
+					severity = "High"
+					deterministic = true
+				}
 				out = append(out, xpathEvidence{
 					param:         param,
 					payloadName:   "XPath Count Pair",
 					target:        t.target,
 					status:        t.status,
-					signal:        res.Detail + exploitResults,
-					severity:      "High",
+					signal:        signal,
+					severity:      severity,
 					confidence:    res.Confidence,
-					deterministic: true,
+					deterministic: deterministic,
 					baseHash:      shortHash(base.bodyHash),
 					attackHash:    shortHash(t.bodyHash),
 				})
@@ -372,10 +385,17 @@ func highestXPathProofDepth(all []xpathEvidence) int {
 		s := strings.ToLower(ev.signal)
 		switch {
 		case strings.Contains(s, "boolean true/false differential confirmed"),
+			strings.Contains(s, "boolean differential confirmed"),
 			strings.Contains(s, "count() differential confirmed"),
 			strings.Contains(s, "structural xml leak detected"):
 			if depth < 3 {
 				depth = 3
+			}
+		case strings.Contains(s, "boolean true/false differential observed"),
+			strings.Contains(s, "count() differential observed"),
+			strings.Contains(s, "manual verification required"):
+			if depth < 2 {
+				depth = 2
 			}
 		case strings.Contains(s, "xpath error found"), ev.deterministic:
 			if depth < 2 {
@@ -479,17 +499,17 @@ func maxSeverity(all []xpathEvidence) string {
 	return normalizeSeverity(best)
 }
 
-func bestConfidence(all []xpathEvidence) string {
-	best := "noisy"
-	bestRank := confidenceRank(best)
+func bestConfidence(all []xpathEvidence) core.FindingConfidence {
+	best := core.ConfidenceNoisy
+	bestRank := core.ConfidenceRank(best)
 	for _, ev := range all {
-		rank := confidenceRank(ev.confidence)
+		rank := core.ConfidenceRank(ev.confidence)
 		if rank > bestRank {
 			best = ev.confidence
 			bestRank = rank
 		}
 	}
-	return strings.ToLower(strings.TrimSpace(best))
+	return best.Normalized()
 }
 
 func severityRank(sev string) int {
@@ -522,17 +542,6 @@ func normalizeSeverity(sev string) string {
 	}
 }
 
-func confidenceRank(conf string) int {
-	switch strings.ToLower(strings.TrimSpace(conf)) {
-	case "confirmed":
-		return 3
-	case "probable":
-		return 2
-	default:
-		return 1
-	}
-}
-
 func hashBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -543,24 +552,6 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:12]
-}
-
-func ensureTrailingSlash(uStr string) string {
-	u, err := url.Parse(uStr)
-	if err != nil {
-		if strings.Contains(uStr, "?") {
-			return uStr
-		}
-		if !strings.HasSuffix(uStr, "/") {
-			return uStr + "/"
-		}
-		return uStr
-	}
-
-	if !strings.HasSuffix(u.Path, "/") {
-		u.Path += "/"
-	}
-	return u.String()
 }
 
 func canonicalEndpoint(raw string) string {

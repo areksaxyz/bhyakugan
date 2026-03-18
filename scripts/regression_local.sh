@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-PATT_PATH="${PATT_PATH:-/home/yupiyy/tools/bug/PayloadsAllTheThings}"
+PATT_PATH="${PATT_PATH:-$HOME/tools/PayloadsAllTheThings}"
 OUT_BIN="/tmp/bhyakugan_regression"
 
 echo "[*] Building scanner"

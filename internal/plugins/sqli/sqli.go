@@ -13,9 +13,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/payloadrepo"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type SQLiPayload struct {
@@ -233,12 +233,18 @@ func ScanBooleanBlind(baseURL string, client *http.Client, onFound func(core.Fin
 
 			res := ve.Verify(baseURL, param, trueP, falseP)
 
-			if res.IsConfirmed {
+			if res.IsSignal {
+				severity := "Medium"
+				detailPrefix := "Boolean-based SQL injection signal"
+				if res.IsConfirmed {
+					severity = "High"
+					detailPrefix = "Boolean-based SQL injection confirmed"
+				}
 				onFound(core.Finding{
 					Type:       "SQL Injection (Boolean-Based)",
 					Target:     baseURL,
-					Detail:     fmt.Sprintf("Confirmed %s in param '%s'. %s (%s)", pair.name, param, res.Detail, res.Evidence),
-					Severity:   "High",
+					Detail:     fmt.Sprintf("%s for %s in param '%s'. %s (%s)", detailPrefix, pair.name, param, res.Detail, res.Evidence),
+					Severity:   severity,
 					Confidence: res.Confidence,
 				})
 				return // Found for this URL
@@ -255,7 +261,7 @@ func checkTarget(target string, payload SQLiPayload, client *http.Client, baseli
 
 	isVulnerable := false
 	detail := ""
-	confidence := "probable"
+	confidence := core.ConfidenceProbable
 	severity := "Medium"
 
 	for db, errors := range DBErrors {
@@ -266,7 +272,7 @@ func checkTarget(target string, payload SQLiPayload, client *http.Client, baseli
 				}
 				isVulnerable = true
 				detail = fmt.Sprintf("CRITICAL Error-based SQL Injection: found %s error marker (%s). This confirms the input is directly reaching the database query.", db, errStr)
-				confidence = "confirmed"
+				confidence = core.ConfidenceConfirmed
 				severity = "Critical"
 				break
 			}
@@ -344,9 +350,9 @@ func checkTarget(target string, payload SQLiPayload, client *http.Client, baseli
 
 		isVulnerable = true
 		if margin1 >= 2.0 && margin2 >= 2.0 && z1Raw >= 4.5 && z2Raw >= 4.5 {
-			confidence = "probable"
+			confidence = core.ConfidenceProbable
 		} else {
-			confidence = "probable"
+			confidence = core.ConfidenceProbable
 		}
 		severity = "Medium"
 		detail = fmt.Sprintf("Time-Based SQLi signal (baseline_mean=%.2fs baseline_std=%.3f req1=%.2fs[z=%.2f,delta=%.2f,entropy=%.2f] req2=%.2fs[z=%.2f,delta=%.2f,entropy=%.2f]).",

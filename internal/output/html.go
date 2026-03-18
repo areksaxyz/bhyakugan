@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/scanner"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/scanner"
 )
 
 func cleanEndpoint(urlStr string) string {
@@ -59,18 +59,23 @@ func createPrivateFile(filename string) (*os.File, error) {
 	return f, nil
 }
 
-func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []string, target string) error {
+func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []string, target, mode string) error {
 	f, err := createPrivateFile(filename)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
+	runtimeMode := scanner.NormalizeRuntimeMode(mode)
+
+	normalizedRaw := normalizeReportFindings(rawFindings)
+	validatedRaw, _, _ := partitionReportFindings(normalizedRaw)
+
 	// Impact per Endpoint (Priority 4 - Refactored: Canonical & Conflict Resolution)
 	endpointImpacts := make(map[string]map[string]bool)
 	endpointTypes := make(map[string]string) // Track detected backend type (SQL vs NoSQL)
 
-	for _, f := range rawFindings {
+	for _, f := range validatedRaw {
 		if f.Severity == "Critical" || f.Severity == "High" {
 			ep := cleanEndpoint(f.Target)
 			if _, ok := endpointImpacts[ep]; !ok {
@@ -112,38 +117,29 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 	}
 
 	// Consolidate Findings for Display
-	findings := consolidateFindings(rawFindings)
-	vulnFindings := make([]core.Finding, 0, len(findings))
-	observations := make([]core.Finding, 0, len(findings))
-	for _, fnd := range findings {
-		if isReconObservation(fnd) {
-			observations = append(observations, fnd)
-			continue
-		}
-		vulnFindings = append(vulnFindings, fnd)
+	findings := normalizeReportFindings(consolidateFindings(rawFindings))
+	validatedFindings, probableSignals, observations := partitionReportFindings(findings)
+
+	sortReportFindings(validatedFindings)
+	sortReportFindings(probableSignals)
+	sortReportFindings(observations)
+
+	overviewCounts := map[core.FindingBucket]int{
+		core.BucketValidated: len(validatedFindings),
+		core.BucketProbable:  len(probableSignals),
+		core.BucketRecon:     len(observations),
 	}
-
-	// Group findings by Severity
-	grouped := make(map[string][]core.Finding)
-	stats := make(map[string]int)
-
-	// Initialize with 0
-	severities := []string{"Critical", "High", "Medium", "Low", "Info"}
-	for _, sev := range severities {
-		stats[sev] = 0
-		grouped[sev] = []core.Finding{}
+	validatedSeverityStats := make(map[string]int)
+	for _, sev := range []string{"Critical", "High", "Medium", "Low"} {
+		validatedSeverityStats[sev] = 0
 	}
-
-	for _, fnd := range vulnFindings {
-		if _, ok := grouped[fnd.Severity]; !ok {
-			grouped["Info"] = append(grouped["Info"], fnd)
-			stats["Info"]++
-		} else {
-			grouped[fnd.Severity] = append(grouped[fnd.Severity], fnd)
-			stats[fnd.Severity]++
+	for _, fnd := range validatedFindings {
+		sev := normalizeSeverityLabel(fnd.Severity)
+		if _, ok := validatedSeverityStats[sev]; ok {
+			validatedSeverityStats[sev]++
 		}
 	}
-	uniqueExploitable := countUniqueExploitable(rawFindings)
+	validatedScopeCount := countUniqueExploitable(normalizedRaw)
 
 	// CSS & Header (Same as before)
 	htmlHead := fmt.Sprintf(`<!DOCTYPE html>
@@ -228,11 +224,23 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
         .card h3 { margin: 0; font-size: 2.5rem; font-weight: 800; }
         .card p { margin: 8px 0 0; color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
         
+        .card.exposure::before { background: var(--critical); } .card.exposure h3 { color: var(--critical); }
+        .card.signal::before { background: var(--medium); } .card.signal h3 { color: var(--medium); }
+        .card.recon::before { background: var(--info); } .card.recon h3 { color: var(--info); }
+        .card.hosts::before { background: var(--primary); } .card.hosts h3 { color: var(--primary); }
         .card.critical::before { background: var(--critical); } .card.critical h3 { color: var(--critical); }
         .card.high::before { background: var(--high); } .card.high h3 { color: var(--high); }
         .card.medium::before { background: var(--medium); } .card.medium h3 { color: var(--medium); }
         .card.low::before { background: var(--low); } .card.low h3 { color: var(--low); }
         .card.info::before { background: var(--info); } .card.info h3 { color: var(--info); }
+        .dashboard-title {
+            margin: 0 0 14px 2px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.8rem;
+            font-weight: 700;
+        }
 
         /* Impact Summary (Scoped) */
         .impact-summary { 
@@ -306,9 +314,10 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
         
 	        .col-type { width: 18%%; font-weight: 700; color: var(--primary); }
-	        .col-target { width: 30%%; word-break: break-all; }
+	        .col-target { width: 24%%; word-break: break-all; }
+            .col-severity { width: 8%%; }
 	        .col-score { width: 10%%; font-weight: 700; }
-	        .col-detail { width: 42%%; color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; }
+	        .col-detail { width: 32%%; color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; }
         .col-detail code { background: #0f172a; padding: 2px 4px; border-radius: 4px; color: #38bdf8; font-family: monospace; }
         
         .bg-Critical { background: var(--critical); }
@@ -334,24 +343,32 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
         <div class="header">
             <div>
                 <h1>Bhyakugan Report</h1>
-                <p style="margin: 8px 0 0 0; color: var(--text-muted); font-weight: 500;">Security Assessment Outcome</p>
+                <p style="margin: 8px 0 0 0; color: var(--text-muted); font-weight: 500;">Public Exposure and Recon Outcome</p>
             </div>
             <div class="header-meta">
                 <p>Target: %s</p>
+                <p>Mode: <strong>%s</strong></p>
                 <p>Date: <strong>%s</strong></p>
-                <p>Live Hosts: <strong>%d</strong></p>
-                <p>Unique Exploitable: <strong>%d</strong></p>
+                <p>Validated Scope Count: <strong>%d</strong></p>
             </div>
         </div>
 
+        <div class="dashboard-title">Exposure Overview</div>
+        <div class="dashboard">
+            <div class="card exposure"><h3>%d</h3><p>Validated Exposures</p></div>
+            <div class="card signal"><h3>%d</h3><p>Probable Sensitive Signals</p></div>
+            <div class="card recon"><h3>%d</h3><p>Recon Surfaces</p></div>
+            <div class="card hosts"><h3>%d</h3><p>Live Hosts</p></div>
+        </div>
+
+        <div class="dashboard-title">Validated Severity</div>
         <div class="dashboard">
             <div class="card critical"><h3>%d</h3><p>Critical</p></div>
             <div class="card high"><h3>%d</h3><p>High</p></div>
             <div class="card medium"><h3>%d</h3><p>Medium</p></div>
             <div class="card low"><h3>%d</h3><p>Low</p></div>
-            <div class="card info"><h3>%d</h3><p>Info</p></div>
         </div>
-`, escapeHTML(target), buildReportLink(target, target), time.Now().Format("Jan 02, 2006 15:04:05 MST"), len(liveHosts), uniqueExploitable, stats["Critical"], stats["High"], stats["Medium"], stats["Low"], stats["Info"])
+`, escapeHTML(target), buildReportLink(target, target), escapeHTML(runtimeMode), time.Now().Format("Jan 02, 2006 15:04:05 MST"), validatedScopeCount, overviewCounts[core.BucketValidated], overviewCounts[core.BucketProbable], overviewCounts[core.BucketRecon], len(liveHosts), validatedSeverityStats["Critical"], validatedSeverityStats["High"], validatedSeverityStats["Medium"], validatedSeverityStats["Low"])
 
 	if _, err := f.WriteString(htmlHead); err != nil {
 		return err
@@ -359,7 +376,7 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 
 	// Render Impact Summary
 	if len(endpointImpacts) > 0 {
-		f.WriteString(`<div class="impact-summary"><h2>Confirmed Impacts by Endpoint:</h2>`)
+		f.WriteString(`<div class="impact-summary"><h2>Validated Exposure Impact by Endpoint:</h2>`)
 		for endpoint, imps := range endpointImpacts {
 			f.WriteString(fmt.Sprintf(`<div class="impact-group"><h3>%s</h3><div class="impact-list">`, escapeHTML(endpoint)))
 			for imp := range imps {
@@ -370,89 +387,14 @@ func GenerateHTML(filename string, rawFindings []core.Finding, liveHosts []strin
 		f.WriteString(`</div>`)
 	}
 
-	// Render Tables by Severity
-	for _, sev := range severities {
-		items := grouped[sev]
-		if len(items) == 0 {
-			continue
-		}
-
-		sectionHeader := fmt.Sprintf(`
-        <div class="section-title">
-            <span class="section-badge bg-%s">%s</span> Findings (%d)
-        </div>
-        <div class="table-container">
-            <table>
-	                <thead><tr><th class="col-type">Vulnerability Type</th><th class="col-target">Target Endpoint</th><th>Confidence</th><th class="col-score">Exploitability</th><th class="col-detail">Evidence / Details</th></tr></thead>
-	                <tbody>`, sev, sev, len(items))
-
-		if _, err := f.WriteString(sectionHeader); err != nil {
-			return err
-		}
-
-		for _, fnd := range items {
-			// Display Clean Endpoint in Table, Full URL in Link
-			displayTarget := cleanEndpoint(fnd.Target)
-			if fnd.Type == "SAML Endpoints Detected" || strings.Contains(fnd.Target, "Endpoints Detected") {
-				displayTarget = fnd.Target // Keep "90 Endpoints" label
-			}
-
-			targetCell := buildReportLink(fnd.Target, displayTarget)
-
-			score := exploitabilityScore(fnd)
-			row := fmt.Sprintf(`
-	            <tr>
-	                <td class="col-type">%s</td>
-	                <td class="col-target">%s</td>
-	                <td>%s</td>
-	                <td class="col-score">%d/100</td>
-	                <td class="col-detail">%s</td>
-	            </tr>`, escapeHTML(fnd.Type), targetCell, escapeHTML(strings.ToUpper(defaultConfidence(fnd.Confidence))), score, escapeHTML(fnd.Detail))
-			if _, err := f.WriteString(row); err != nil {
-				return err
-			}
-		}
-
-		if _, err := f.WriteString("</tbody></table></div>"); err != nil {
-			return err
-		}
+	if err := renderFindingSection(f, core.BucketValidated, validatedFindings, true); err != nil {
+		return err
 	}
-
-	if len(observations) > 0 {
-		sectionHeader := fmt.Sprintf(`
-        <div class="section-title">
-            <span class="section-badge bg-Info">Recon</span> Observations (%d)
-        </div>
-        <div class="table-container">
-            <table>
-                <thead><tr><th class="col-type">Signal Type</th><th class="col-target">Target Endpoint</th><th>Confidence</th><th class="col-detail">Details</th></tr></thead>
-                <tbody>`, len(observations))
-		if _, err := f.WriteString(sectionHeader); err != nil {
-			return err
-		}
-
-		for _, obs := range observations {
-			displayTarget := cleanEndpoint(obs.Target)
-			if strings.Contains(obs.Target, "Endpoints Detected") {
-				displayTarget = obs.Target
-			}
-			targetCell := buildReportLink(obs.Target, displayTarget)
-
-			row := fmt.Sprintf(`
-            <tr>
-                <td class="col-type">%s</td>
-                <td class="col-target">%s</td>
-                <td>%s</td>
-                <td class="col-detail">%s</td>
-            </tr>`, escapeHTML(obs.Type), targetCell, escapeHTML(strings.ToUpper(defaultConfidence(obs.Confidence))), escapeHTML(obs.Detail))
-			if _, err := f.WriteString(row); err != nil {
-				return err
-			}
-		}
-
-		if _, err := f.WriteString("</tbody></table></div>"); err != nil {
-			return err
-		}
+	if err := renderFindingSection(f, core.BucketProbable, probableSignals, true); err != nil {
+		return err
+	}
+	if err := renderFindingSection(f, core.BucketRecon, observations, false); err != nil {
+		return err
 	}
 
 	// Footer
@@ -484,12 +426,246 @@ func SaveList(filename string, items []string) error {
 	return nil
 }
 
-func defaultConfidence(c string) string {
-	c = strings.TrimSpace(strings.ToLower(c))
-	if c == "" {
-		return "probable"
+func normalizeReportFindings(findings []core.Finding) []core.Finding {
+	out := make([]core.Finding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, normalizeReportFinding(f))
 	}
-	return c
+	return out
+}
+
+func normalizeReportFinding(f core.Finding) core.Finding {
+	f.Severity = normalizeSeverityLabel(f.Severity)
+	f.Confidence = f.Confidence.Normalized()
+
+	lowerType := strings.ToLower(strings.TrimSpace(f.Type))
+	lowerDetail := strings.ToLower(strings.TrimSpace(f.Detail))
+
+	if strings.Contains(lowerDetail, "validation status: informational signal only") ||
+		strings.Contains(lowerDetail, "no deterministic boolean/count/error proof") {
+		f.Severity = "Info"
+		f.Confidence = core.ConfidenceNoisy
+		return f
+	}
+
+	if (strings.Contains(lowerDetail, "manual verification required") || strings.Contains(lowerDetail, "needs manual verification")) &&
+		severityRank(f.Severity) > severityRank("Medium") {
+		f.Severity = "Medium"
+	}
+
+	if isBooleanBasedSQLSignal(f) && strings.Contains(lowerDetail, "body_fingerprint=false") {
+		if f.Confidence == core.ConfidenceConfirmed {
+			f.Confidence = core.ConfidenceProbable
+		}
+		if severityRank(f.Severity) > severityRank("Medium") {
+			f.Severity = "Medium"
+		}
+	}
+
+	if strings.Contains(lowerType, "xpath injection") && isXPathInformationalReportSignal(lowerDetail) {
+		f.Severity = "Info"
+		f.Confidence = core.ConfidenceNoisy
+		return f
+	}
+
+	if !isReconObservation(f) && f.Confidence == core.ConfidenceConfirmed && !hasValidatedEvidence(f) {
+		f.Confidence = core.ConfidenceProbable
+		if severityRank(f.Severity) > severityRank("Medium") {
+			f.Severity = "Medium"
+		}
+	}
+
+	return f
+}
+
+func partitionReportFindings(findings []core.Finding) (validated, signals, observations []core.Finding) {
+	validated = make([]core.Finding, 0, len(findings))
+	signals = make([]core.Finding, 0, len(findings))
+	observations = make([]core.Finding, 0, len(findings))
+
+	for _, f := range findings {
+		switch reportFindingBucket(f) {
+		case core.BucketRecon:
+			observations = append(observations, f)
+		case core.BucketValidated:
+			validated = append(validated, f)
+		default:
+			signals = append(signals, f)
+		}
+	}
+
+	return validated, signals, observations
+}
+
+func hasValidatedEvidence(f core.Finding) bool {
+	lowerDetail := strings.ToLower(strings.TrimSpace(f.Detail))
+	if strings.Contains(lowerDetail, "manual verification required") ||
+		strings.Contains(lowerDetail, "needs manual verification") ||
+		strings.Contains(lowerDetail, "validation status: informational signal only") ||
+		strings.Contains(lowerDetail, "no deterministic boolean/count/error proof") {
+		return false
+	}
+
+	score, hasScore := scanner.ExtractEvidenceQualityScore(f.Detail)
+	if hasScore && score < 80 {
+		return false
+	}
+
+	if isBooleanBasedSQLSignal(f) && strings.Contains(lowerDetail, "body_fingerprint=false") {
+		return false
+	}
+
+	if depth, ok := scanner.ExtractExploitDepth(f.Detail); ok && depth < 3 {
+		return false
+	}
+
+	return severityRank(f.Severity) >= severityRank("High")
+}
+
+func isValidatedFinding(f core.Finding) bool {
+	if isReconObservation(f) {
+		return false
+	}
+	if f.Confidence.Normalized() != core.ConfidenceConfirmed {
+		return false
+	}
+	return hasValidatedEvidence(f)
+}
+
+func isBooleanBasedSQLSignal(f core.Finding) bool {
+	lowerType := strings.ToLower(strings.TrimSpace(f.Type))
+	lowerDetail := strings.ToLower(strings.TrimSpace(f.Detail))
+	return strings.Contains(lowerType, "sql injection") && strings.Contains(lowerDetail, "boolean")
+}
+
+func isXPathInformationalReportSignal(detail string) bool {
+	return strings.Contains(detail, "validation status: informational signal only") ||
+		(strings.Contains(detail, "heuristic only") &&
+			!strings.Contains(detail, "boolean true/false differential confirmed") &&
+			!strings.Contains(detail, "count() differential confirmed") &&
+			!strings.Contains(detail, "structural xml leak detected"))
+}
+
+func reportFindingBucket(f core.Finding) core.FindingBucket {
+	switch {
+	case isReconObservation(f):
+		return core.BucketRecon
+	case isValidatedFinding(f):
+		return core.BucketValidated
+	default:
+		return core.BucketProbable
+	}
+}
+
+func sortReportFindings(findings []core.Finding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		ri := severityRank(findings[i].Severity)
+		rj := severityRank(findings[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+
+		ci := core.ConfidenceRank(findings[i].Confidence)
+		cj := core.ConfidenceRank(findings[j].Confidence)
+		if ci != cj {
+			return ci > cj
+		}
+
+		si := exploitabilityScore(findings[i])
+		sj := exploitabilityScore(findings[j])
+		if si != sj {
+			return si > sj
+		}
+
+		if findings[i].Type != findings[j].Type {
+			return findings[i].Type < findings[j].Type
+		}
+		return findings[i].Target < findings[j].Target
+	})
+}
+
+func renderFindingSection(out *os.File, bucket core.FindingBucket, items []core.Finding, includeExploitability bool) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	title := core.DisplayBucketLabel(bucket)
+	badge := bucketBadgeSeverity(bucket)
+	exploitabilityHeader := ""
+	if includeExploitability {
+		exploitabilityHeader = `<th class="col-score">Exploitability</th>`
+	}
+
+	sectionHeader := fmt.Sprintf(`
+        <div class="section-title">
+            <span class="section-badge bg-%s">%s</span> (%d)
+        </div>
+        <div class="table-container">
+            <table>
+                <thead><tr><th class="col-type">Type</th><th class="col-target">Target</th><th class="col-severity">Severity</th><th>Confidence</th>%s<th class="col-detail">Evidence / Details</th></tr></thead>
+                <tbody>`, badge, title, len(items), exploitabilityHeader)
+	if _, err := out.WriteString(sectionHeader); err != nil {
+		return err
+	}
+
+	for _, item := range items {
+		displayTarget := cleanEndpoint(item.Target)
+		if strings.Contains(item.Target, "Endpoints Detected") {
+			displayTarget = item.Target
+		}
+		targetCell := buildReportLink(item.Target, displayTarget)
+		severityCell := fmt.Sprintf(`<span class="section-badge bg-%s">%s</span>`, normalizeSeverityLabel(item.Severity), normalizeSeverityLabel(item.Severity))
+
+		exploitabilityCell := ""
+		if includeExploitability {
+			exploitabilityCell = fmt.Sprintf(`<td class="col-score">%d/100</td>`, exploitabilityScore(item))
+		}
+
+		row := fmt.Sprintf(`
+            <tr>
+                <td class="col-type">%s</td>
+                <td class="col-target">%s</td>
+                <td class="col-severity">%s</td>
+                <td>%s</td>
+                %s
+                <td class="col-detail">%s</td>
+            </tr>`,
+			escapeHTML(displayFindingType(item)),
+			targetCell,
+			severityCell,
+			escapeHTML(item.Confidence.DisplayLabel()),
+			exploitabilityCell,
+			escapeHTML(item.Detail),
+		)
+		if _, err := out.WriteString(row); err != nil {
+			return err
+		}
+	}
+
+	_, err := out.WriteString("</tbody></table></div>")
+	return err
+}
+
+func bucketBadgeSeverity(bucket core.FindingBucket) string {
+	switch bucket {
+	case core.BucketValidated:
+		return "High"
+	case core.BucketRecon:
+		return "Info"
+	default:
+		return "Medium"
+	}
+}
+
+func displayFindingType(f core.Finding) string {
+	switch {
+	case strings.EqualFold(f.Type, "Path Discovered"), strings.EqualFold(f.Type, "Accessible Path"):
+		return "Surface Discovery"
+	case strings.EqualFold(f.Type, "Recon: Login Form Detected"):
+		return "Auth Surface: Login Form"
+	default:
+		return f.Type
+	}
 }
 
 func isReconObservation(f core.Finding) bool {
@@ -508,8 +684,8 @@ func isReconObservation(f core.Finding) bool {
 		return true
 	}
 
-	conf := strings.ToLower(defaultConfidence(f.Confidence))
-	if (sev == "Info" || sev == "Low") && conf == "noisy" {
+	conf := f.Confidence.Normalized()
+	if (sev == "Info" || sev == "Low") && conf == core.ConfidenceNoisy {
 		if !strings.Contains(lowerDetail, "deterministic=true") || !strings.Contains(lowerDetail, "control_validation=true") {
 			return true
 		}
@@ -539,6 +715,7 @@ func isExplicitReconType(t string) bool {
 		"jwt discovered",
 		"jwt header info",
 		"jwt sensitive info",
+		"object reference surface",
 		"saml endpoints detected",
 		"mobile-specific endpoint",
 	}
@@ -557,6 +734,7 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 	// Key format varies by severity to support different consolidation strategies
 	grouped := make(map[string][]core.Finding)
 	rootCauseSignatureCounts := make(map[string]int)
+	materialRootCauseClassSeen := make(map[string]bool)
 
 	normalized := make([]core.Finding, 0, len(findings))
 	for _, f := range findings {
@@ -575,6 +753,9 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 		}
 		f.Type = fType
 		normalized = append(normalized, f)
+		if class := scanner.NormalizedVulnerabilityClass(f); shouldSuppressWeakDuplicateRootCause(class, normalizeSeverityLabel(f.Severity)) {
+			materialRootCauseClassSeen[class] = true
+		}
 
 		if sig := rootCauseCollapseSignature(f); sig != "" {
 			rootCauseSignatureCounts[sig]++
@@ -583,6 +764,9 @@ func consolidateFindings(findings []core.Finding) []core.Finding {
 
 	for _, f := range normalized {
 		fType := f.Type
+		if class := scanner.NormalizedVulnerabilityClass(f); materialRootCauseClassSeen[class] && isWeakDuplicateRootCauseFinding(class, normalizeSeverityLabel(f.Severity)) {
+			continue
+		}
 
 		var key string
 		if f.Severity == "Critical" || f.Severity == "High" {
@@ -751,11 +935,34 @@ func rootCauseCollapseSignature(f core.Finding) string {
 		return ""
 	}
 
-	proof := scanner.ExecutionProofSignature(f.Detail)
+	proof := extractMeaningfulProofLine(f.Detail)
+	if class == "xml_query_injection" || class == "template_engine_injection" {
+		proof = class
+	} else if proof == "" {
+		proof = scanner.ExecutionProofSignature(f.Detail)
+	}
 	if proof == "" {
 		proof = "none"
 	}
 	return class + "|" + proof + "|" + middlewareSignature(f.Detail)
+}
+
+func shouldSuppressWeakDuplicateRootCause(class, severity string) bool {
+	switch class {
+	case "xml_query_injection", "template_engine_injection":
+		return severityRank(normalizeSeverityLabel(severity)) >= severityRank("Medium")
+	default:
+		return false
+	}
+}
+
+func isWeakDuplicateRootCauseFinding(class, severity string) bool {
+	switch class {
+	case "xml_query_injection", "template_engine_injection":
+		return severityRank(normalizeSeverityLabel(severity)) < severityRank("Medium")
+	default:
+		return false
+	}
 }
 
 func rootCauseDisplayLabel(signature, fallback string) string {
@@ -954,8 +1161,11 @@ func extractMeaningfulProofLine(detail string) string {
 }
 
 func collectAffectedParameters(group []core.Finding) []string {
-	set := make(map[string]bool)
+	counts := make(map[string]int)
+	allSeen := make(map[string]bool)
+	groupCount := 0
 	for _, g := range group {
+		local := make(map[string]bool)
 		for _, raw := range strings.Split(g.Detail, "\n") {
 			line := strings.TrimSpace(raw)
 			if !strings.HasPrefix(strings.ToLower(line), "affected parameters:") {
@@ -970,17 +1180,39 @@ func collectAffectedParameters(group []core.Finding) []string {
 				if p == "" {
 					continue
 				}
-				set[p] = true
+				local[p] = true
 			}
 		}
+		if len(local) == 0 {
+			continue
+		}
+		groupCount++
+		for p := range local {
+			counts[p]++
+			allSeen[p] = true
+		}
 	}
-	if len(set) == 0 {
+	if len(allSeen) == 0 {
 		return nil
 	}
-	params := make([]string, 0, len(set))
-	for p := range set {
-		params = append(params, p)
+
+	minCount := 1
+	if groupCount >= 4 {
+		minCount = (groupCount + 1) / 2
 	}
+
+	params := make([]string, 0, len(allSeen))
+	for p, count := range counts {
+		if count >= minCount {
+			params = append(params, p)
+		}
+	}
+	if len(params) == 0 {
+		for p := range allSeen {
+			params = append(params, p)
+		}
+	}
+
 	sort.Strings(params)
 	return params
 }
@@ -1108,8 +1340,8 @@ func highSeverityClusterType(f core.Finding) string {
 func countUniqueExploitable(findings []core.Finding) int {
 	unique := make(map[string]bool)
 	for _, f := range findings {
-		sev := normalizeSeverityLabel(f.Severity)
-		if sev != "Critical" && sev != "High" {
+		f = normalizeReportFinding(f)
+		if !isValidatedFinding(f) {
 			continue
 		}
 		class := uniqueExploitableClass(f)
@@ -1204,10 +1436,10 @@ func exploitabilityScore(f core.Finding) int {
 		}
 	}
 
-	switch strings.ToLower(defaultConfidence(f.Confidence)) {
-	case "confirmed":
+	switch f.Confidence.Normalized() {
+	case core.ConfidenceConfirmed:
 		base += 10
-	case "noisy":
+	case core.ConfidenceNoisy:
 		base -= 20
 	}
 	if quality, ok := scanner.ExtractEvidenceQualityScore(f.Detail); ok {
@@ -1236,31 +1468,18 @@ func maxSeverityInGroup(group []core.Finding) string {
 	return maxSeverity
 }
 
-func bestConfidenceInGroup(group []core.Finding) string {
-	best := "noisy"
-	bestRank := confidenceRank(best)
+func bestConfidenceInGroup(group []core.Finding) core.FindingConfidence {
+	best := core.ConfidenceNoisy
+	bestRank := core.ConfidenceRank(best)
 	for _, f := range group {
-		c := defaultConfidence(f.Confidence)
-		r := confidenceRank(c)
+		c := f.Confidence.Normalized()
+		r := core.ConfidenceRank(c)
 		if r > bestRank {
 			bestRank = r
 			best = c
 		}
 	}
 	return best
-}
-
-func confidenceRank(c string) int {
-	switch strings.ToLower(strings.TrimSpace(c)) {
-	case "confirmed":
-		return 3
-	case "probable":
-		return 2
-	case "noisy":
-		return 1
-	default:
-		return 1
-	}
 }
 
 func severityRank(sev string) int {

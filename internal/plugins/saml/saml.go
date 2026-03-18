@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var SAMLEndpoints = []string{
@@ -111,7 +111,7 @@ func testSignatureStripping(target string, client *http.Client, onFound func(cor
 		Target:     target,
 		Detail:     fmt.Sprintf("Server accepted an unsigned SAML Response (probable signature-stripping signal).\nControl-test:passed (malformed assertion was not accepted as successful auth).\nRedirect/URL: %s\nCookie: %s\nMissing controls not yet verified: audience restriction, issuer validation, replay protection.", location+finalURL, cookie),
 		Severity:   "High",
-		Confidence: "probable",
+		Confidence: core.ConfidenceProbable,
 	})
 }
 

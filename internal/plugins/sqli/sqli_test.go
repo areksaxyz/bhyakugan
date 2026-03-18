@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -125,5 +125,41 @@ func TestComputeZScoreThreshold(t *testing.T) {
 	}
 	if zHigh < timeZScoreThreshold {
 		t.Fatalf("expected z-score %.2f to be at least threshold %.2f", zHigh, timeZScoreThreshold)
+	}
+}
+
+func TestScanBooleanBlindDowngradesWhenBodyFingerprintIsWeak(t *testing.T) {
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rawQuery := strings.ToLower(req.URL.RawQuery)
+			switch {
+			case strings.Contains(rawQuery, "bhyakugan_baseline_control"):
+				return buildResponse(req, http.StatusOK, "normal-response", 0), nil
+			case strings.Contains(rawQuery, "id=1+and+1%3d1"):
+				return buildResponse(req, http.StatusInternalServerError, "normal-response", 0), nil
+			case strings.Contains(rawQuery, "id=1+and+1%3d2"):
+				return buildResponse(req, http.StatusOK, "normal-response", 0), nil
+			default:
+				return buildResponse(req, http.StatusOK, "normal-response", 0), nil
+			}
+		}),
+	}
+
+	var findings []core.Finding
+	ScanBooleanBlind("http://example.com/search?id=1", client, func(f core.Finding) {
+		findings = append(findings, f)
+	})
+
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding, got %d", len(findings))
+	}
+	if findings[0].Confidence != "probable" {
+		t.Fatalf("expected probable confidence, got %q", findings[0].Confidence)
+	}
+	if findings[0].Severity != "Medium" {
+		t.Fatalf("expected Medium severity, got %q", findings[0].Severity)
+	}
+	if !strings.Contains(strings.ToLower(findings[0].Detail), "manual verification required") {
+		t.Fatalf("expected manual-verification note, got detail: %s", findings[0].Detail)
 	}
 }

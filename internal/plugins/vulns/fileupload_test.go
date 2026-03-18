@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -94,7 +94,10 @@ func TestUploadFindingRequiresRetrievalProof(t *testing.T) {
 		}),
 	}
 
-	testUpload("https://example.com/upload", client, func(f core.Finding) {
+	testUpload("https://example.com/upload", client, uploadProbe{
+		Filename:    "proof.txt",
+		ContentType: "text/plain",
+	}, func(f core.Finding) {
 		findings = append(findings, f)
 	})
 
@@ -119,7 +122,7 @@ func TestUploadFindingConfirmedWhenRetrieved(t *testing.T) {
 				marker = re.FindString(string(body))
 				return &http.Response{
 					StatusCode: 201,
-					Body:       io.NopCloser(strings.NewReader(`{"status":"success","file_url":"/uploads/bhyakugan_test.php"}`)),
+					Body:       io.NopCloser(strings.NewReader(`{"status":"success","file_url":"/uploads/proof.txt"}`)),
 					Header:     make(http.Header),
 					Request:    req,
 				}, nil
@@ -141,7 +144,10 @@ func TestUploadFindingConfirmedWhenRetrieved(t *testing.T) {
 		}),
 	}
 
-	testUpload("https://example.com/upload", client, func(f core.Finding) {
+	testUpload("https://example.com/upload", client, uploadProbe{
+		Filename:    "proof.txt",
+		ContentType: "text/plain",
+	}, func(f core.Finding) {
 		findings = append(findings, f)
 	})
 
@@ -151,7 +157,7 @@ func TestUploadFindingConfirmedWhenRetrieved(t *testing.T) {
 	if findings[0].Severity != "High" || findings[0].Confidence != "confirmed" {
 		t.Fatalf("expected verified finding, got severity=%s confidence=%s", findings[0].Severity, findings[0].Confidence)
 	}
-	if findings[0].Target != "https://example.com/uploads/bhyakugan_test.php" {
+	if findings[0].Target != "https://example.com/uploads/proof.txt" {
 		t.Fatalf("unexpected verified target: %s", findings[0].Target)
 	}
 }

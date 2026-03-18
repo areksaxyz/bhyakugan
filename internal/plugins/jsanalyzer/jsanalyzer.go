@@ -5,12 +5,14 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/plugins/secrets"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/secrets"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 var (
@@ -29,6 +31,7 @@ var (
 	// Client-Side Token Generation (New: Yousef Elsheikh Report)
 	cryptoJSLeak   = regexp.MustCompile(`CryptoJS\.(?:HmacSHA256|HmacSHA1|HmacMD5|AES\.encrypt)\s*\(`)
 	secretConstant = regexp.MustCompile(`(?i)(?:var|const|let)\s+(\w*(?:token|secret|key|constant|auth|sign)\w*)\s*=\s*["']([^"']{4,})["']`)
+	quotedLiteral  = regexp.MustCompile(`["']([^"'\\]{4,240})["']`)
 )
 
 const maxJSBody = 2 * 1024 * 1024
@@ -111,9 +114,11 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 	checkRegexGroupAndProbe(content, apiPath, "API Path", jsURL, "Info", client, emit)
 	checkRegexGroup(content, graphQL, "GraphQL-like Endpoint Detected", jsURL, "Info", emit)
 	checkRegexGroup(content, adminPath, "Admin Path", jsURL, "Info", emit)
+	emitKeywordReferenceFinding(content, jsURL, mergedJSEndpointKeywords(), "Recon: JS Keyword Surface", "Info", emit)
 
 	// 3. Check Files
 	checkRegexGroup(content, sensitiveFiles, "Sensitive File Ref", jsURL, "Low", emit)
+	emitKeywordReferenceFinding(content, jsURL, mergedJSSecretKeywords(), "JS Sensitive Reference", "Medium", emit)
 
 	// 4. Check for Token Leaks (XSSI candidates)
 	checkRegexGroup(content, tokenLeak, "Leaked Token in JS", jsURL, "Medium", emit)
@@ -126,10 +131,115 @@ func ScanJS(jsURL string, client *http.Client, wg *sync.WaitGroup, onFound func(
 			Target:     jsURL,
 			Detail:     "CryptoJS usage detected. Combined with hardcoded constants, this may allow attackers to generate valid authentication tokens.",
 			Severity:   "High",
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	}
 	checkSecretConstants(content, jsURL, emit)
+}
+
+func mergedJSSecretKeywords() []string {
+	return payloadrepo.LoadRepoLines(48,
+		"verify/js-secret-keywords.txt",
+		"js-secret-keywords.txt",
+	)
+}
+
+func mergedJSEndpointKeywords() []string {
+	return payloadrepo.LoadRepoLines(48,
+		"verify/js-endpoint-keywords.txt",
+		"js-endpoint-keywords.txt",
+	)
+}
+
+func mergedInterestingResponseKeywords() []string {
+	return payloadrepo.LoadRepoLines(48,
+		"verify/response-interesting-keywords.txt",
+		"response-interesting-keywords.txt",
+	)
+}
+
+func findKeywordReferences(content string, keywords []string) ([]string, []string) {
+	if len(keywords) == 0 || strings.TrimSpace(content) == "" {
+		return nil, nil
+	}
+
+	refSeen := map[string]bool{}
+	keywordSeen := map[string]bool{}
+	var references []string
+	var matchedKeywords []string
+	for _, match := range quotedLiteral.FindAllStringSubmatch(content, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		literal := strings.TrimSpace(match[1])
+		if literal == "" {
+			continue
+		}
+		lowerLiteral := strings.ToLower(literal)
+		localHit := false
+		for _, rawKeyword := range keywords {
+			keyword := strings.ToLower(strings.TrimSpace(rawKeyword))
+			if keyword == "" || !strings.Contains(lowerLiteral, keyword) {
+				continue
+			}
+			localHit = true
+			if !keywordSeen[keyword] {
+				keywordSeen[keyword] = true
+				matchedKeywords = append(matchedKeywords, keyword)
+			}
+		}
+		if !localHit || refSeen[literal] {
+			continue
+		}
+		refSeen[literal] = true
+		references = append(references, literal)
+		if len(references) >= 6 {
+			break
+		}
+	}
+
+	sort.Strings(matchedKeywords)
+	return references, matchedKeywords
+}
+
+func emitKeywordReferenceFinding(content, source string, keywords []string, findingType, severity string, onFound func(core.Finding)) {
+	references, matchedKeywords := findKeywordReferences(content, keywords)
+	if len(references) == 0 {
+		return
+	}
+
+	detail := fmt.Sprintf("Keyword-matched JS references found. Keywords: %s. Examples: %s", strings.Join(matchedKeywords, ", "), strings.Join(references, ", "))
+	onFound(core.Finding{
+		Type:       findingType,
+		Target:     source,
+		Detail:     detail,
+		Severity:   severity,
+		Confidence: core.ConfidenceProbable,
+	})
+}
+
+func interestingResponseKeywordHits(content string) []string {
+	keywords := mergedInterestingResponseKeywords()
+	if len(keywords) == 0 || strings.TrimSpace(content) == "" {
+		return nil
+	}
+
+	bodyLower := strings.ToLower(content)
+	seen := map[string]bool{}
+	var hits []string
+	for _, rawKeyword := range keywords {
+		keyword := strings.ToLower(strings.TrimSpace(rawKeyword))
+		if keyword == "" || seen[keyword] || !strings.Contains(bodyLower, keyword) {
+			continue
+		}
+		seen[keyword] = true
+		hits = append(hits, keyword)
+		if len(hits) >= 6 {
+			break
+		}
+	}
+	sort.Strings(hits)
+	return hits
 }
 
 func dedupeJSFindings(onFound func(core.Finding)) func(core.Finding) {
@@ -169,7 +279,7 @@ func checkSecretConstants(content, source string, onFound func(core.Finding)) {
 					Target:     source,
 					Detail:     fmt.Sprintf("Potential hardcoded secret or token generator constant: %s = %s", varName, value),
 					Severity:   "Medium",
-					Confidence: "probable",
+					Confidence: core.ConfidenceProbable,
 				})
 				seen[value] = true
 			}
@@ -217,7 +327,7 @@ func checkXSSI(jsURL string, client *http.Client, onFound func(core.Finding)) {
 				Target:     jsURL,
 				Detail:     "JS file content changes based on authentication state and contains sensitive-looking tokens. Attackers can include this script cross-origin to steal data.",
 				Severity:   "High",
-				Confidence: "probable",
+				Confidence: core.ConfidenceProbable,
 			})
 		}
 	}
@@ -304,7 +414,8 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 
 	// Create a client that doesn't follow redirects to avoid logging in
 	noRedirectClient := &http.Client{
-		Timeout: client.Timeout,
+		Timeout:   client.Timeout,
+		Transport: client.Transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -332,10 +443,19 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 		if resp.StatusCode == 200 || resp.StatusCode == 201 {
 			body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 			bodyStr := strings.ToLower(string(body))
+			contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+			keywordHits := interestingResponseKeywordHits(string(body))
 
 			// Filter out common false positives (e.g., standard login pages returning 200)
-			if !strings.Contains(bodyStr, "<html") && !strings.Contains(bodyStr, "login") && len(bodyStr) > 0 {
-				vulnerableMethods = append(vulnerableMethods, fmt.Sprintf("%s (%d)", method, resp.StatusCode))
+			if !strings.Contains(bodyStr, "<html") &&
+				!strings.Contains(bodyStr, "login") &&
+				len(bodyStr) > 0 &&
+				(len(keywordHits) > 0 || strings.Contains(contentType, "json")) {
+				if len(keywordHits) > 0 {
+					vulnerableMethods = append(vulnerableMethods, fmt.Sprintf("%s (%d; keywords=%s)", method, resp.StatusCode, strings.Join(keywordHits, ",")))
+				} else {
+					vulnerableMethods = append(vulnerableMethods, fmt.Sprintf("%s (%d)", method, resp.StatusCode))
+				}
 			}
 		}
 		resp.Body.Close()
@@ -347,7 +467,7 @@ func probeEndpointMethods(url string, client *http.Client, onFound func(core.Fin
 			Target:     url,
 			Detail:     fmt.Sprintf("Endpoint discovered in JS allows unauthenticated access via methods: %s", strings.Join(vulnerableMethods, ", ")),
 			Severity:   "High",
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	}
 }

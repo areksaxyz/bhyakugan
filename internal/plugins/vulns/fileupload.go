@@ -6,13 +6,16 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 var UploadPaths = []string{
@@ -20,7 +23,12 @@ var UploadPaths = []string{
 	"/upload.php", "/uploader", "/api/image/upload", "/api/v1/user/avatar",
 }
 
-var uploadedFileCandidate = regexp.MustCompile(`(?i)(https?://[^\s"'<>]+|/[^\s"'<>]*(?:bhyakugan_test\.php|upload[^\s"'<>]*|files?[^\s"'<>]*|media[^\s"'<>]*))`)
+var uploadedFileCandidate = regexp.MustCompile(`(?i)(https?://[^\s"'<>]+|/[^\s"'<>]*(?:upload[^\s"'<>]*|files?[^\s"'<>]*|media[^\s"'<>]*|proof[^\s"'<>]*|avatar[^\s"'<>]*|document[^\s"'<>]*|report[^\s"'<>]*|verification[^\s"'<>]*))`)
+
+type uploadProbe struct {
+	Filename    string
+	ContentType string
+}
 
 func ScanFileUpload(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	// Simple unauthenticated upload check on common paths
@@ -32,21 +40,100 @@ func ScanFileUpload(baseURL string, client *http.Client, onFound func(core.Findi
 
 	for _, path := range UploadPaths {
 		target := rootURL + path
-		testUpload(target, client, onFound)
+		for _, probe := range uploadProbesForCurrentMode() {
+			testUpload(target, client, probe, onFound)
+		}
 	}
 }
 
-func testUpload(url string, client *http.Client, onFound func(core.Finding)) {
+func uploadProbesForCurrentMode() []uploadProbe {
+	safeFilenames := payloadrepo.LoadRepoLines(8, "verify/upload-safe-filenames.txt")
+	if len(safeFilenames) == 0 {
+		safeFilenames = []string{"proof.txt"}
+	}
+
+	seen := make(map[string]bool)
+	probes := make([]uploadProbe, 0, 2)
+	addProbe := func(filename string) {
+		filename = strings.TrimSpace(filename)
+		if filename == "" || seen[filename] {
+			return
+		}
+		seen[filename] = true
+		probes = append(probes, uploadProbe{
+			Filename:    filename,
+			ContentType: contentTypeForUpload(filename),
+		})
+	}
+
+	addProbe(safeFilenames[0])
+
+	if payloadrepo.ScanMode() == "aggressive" {
+		for _, filename := range payloadrepo.LoadRepoLines(4, "aggressive/upload-bypass-filenames.txt") {
+			addProbe(filename)
+			if len(probes) >= 3 {
+				break
+			}
+		}
+	}
+
+	return probes
+}
+
+func contentTypeForUpload(filename string) string {
+	allowed := payloadrepo.LoadRepoLines(16, "verify/upload-safe-content-types.txt")
+	ext := strings.ToLower(path.Ext(filename))
+
+	preferred := "application/octet-stream"
+	switch ext {
+	case ".txt", ".log", ".csv":
+		preferred = "text/plain"
+	case ".png":
+		preferred = "image/png"
+	case ".jpg", ".jpeg":
+		preferred = "image/jpeg"
+	case ".pdf":
+		preferred = "application/pdf"
+	case ".json":
+		preferred = "application/json"
+	}
+
+	if len(allowed) == 0 {
+		return preferred
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(candidate, preferred) {
+			return candidate
+		}
+	}
+	return allowed[0]
+}
+
+func buildUploadBody(filename, marker string) string {
+	switch strings.ToLower(path.Ext(filename)) {
+	case ".php", ".php3", ".php4", ".php5", ".phtml", ".phar":
+		return fmt.Sprintf("<?php echo '%s'; ?>", marker)
+	case ".svg":
+		return fmt.Sprintf("<svg xmlns=\"http://www.w3.org/2000/svg\"><desc>%s</desc></svg>", marker)
+	default:
+		return marker
+	}
+}
+
+func testUpload(url string, client *http.Client, probe uploadProbe, onFound func(core.Finding)) {
 	marker := fmt.Sprintf("BHYAKUGAN_UPLOAD_TEST_%d", time.Now().UnixNano())
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 
-	// Try to upload a dummy PHP file
-	fw, err := w.CreateFormFile("file", "bhyakugan_test.php")
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, probe.Filename))
+	partHeader.Set("Content-Type", probe.ContentType)
+
+	fw, err := w.CreatePart(partHeader)
 	if err != nil {
 		return
 	}
-	if _, err = io.Copy(fw, strings.NewReader(fmt.Sprintf("<?php echo '%s'; ?>", marker))); err != nil {
+	if _, err = io.Copy(fw, strings.NewReader(buildUploadBody(probe.Filename, marker))); err != nil {
 		return
 	}
 	w.Close()
@@ -77,7 +164,7 @@ func testUpload(url string, client *http.Client, onFound func(core.Finding)) {
 					Target:     verifiedURL,
 					Detail:     "Uploaded test file was retrievable without authentication and contained the expected verification marker.",
 					Severity:   "High",
-					Confidence: "confirmed",
+					Confidence: core.ConfidenceConfirmed,
 				})
 				return
 			}
@@ -87,7 +174,7 @@ func testUpload(url string, client *http.Client, onFound func(core.Finding)) {
 				Target:     url,
 				Detail:     "Endpoint accepted an unauthenticated test upload, but the uploaded file path could not be verified automatically.",
 				Severity:   "Medium",
-				Confidence: "probable",
+				Confidence: core.ConfidenceProbable,
 			})
 		}
 	}

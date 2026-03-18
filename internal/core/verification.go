@@ -6,15 +6,19 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 // VerificationResult contains the outcome of a differential analysis
 type VerificationResult struct {
-	IsConfirmed bool
-	Confidence  string
-	Detail      string
-	Evidence    string
+	IsConfirmed           bool
+	IsSignal              bool
+	Confidence            FindingConfidence
+	Detail                string
+	Evidence              string
+	ControlValidated      bool
+	ResponseDiffStable    bool
+	BodyFingerprintStrong bool
 }
 
 // VerificationEngine provides standardized payload validation
@@ -28,80 +32,83 @@ func NewVerificationEngine(client *http.Client) *VerificationEngine {
 
 // Verify performs a differential analysis (Baseline vs True vs False)
 func (ve *VerificationEngine) Verify(baseURL, param, truePayload, falsePayload string) VerificationResult {
-	// 1. Establish Baseline (Request with control value)
-	baselineTarget, _ := buildTarget(baseURL, param, "bhyakugan_baseline_control")
-	baseResp, baseBody, err := ve.performRequest(baselineTarget)
+	// 1. Establish controls
+	originalProbe, err := ve.requestSnapshot(baseURL)
 	if err != nil {
-		return VerificationResult{IsConfirmed: false, Detail: "Baseline request failed"}
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "Original request failed"}
 	}
-	baseFp := utils.BuildResponseFingerprint(baseResp, []byte(baseBody))
-	baseNorm := utils.NormalizeBody(baseBody)
-	baseLen := len(baseNorm)
+
+	baselineTarget, _ := buildTarget(baseURL, param, "bhyakugan_baseline_control")
+	baseProbe, err := ve.requestSnapshot(baselineTarget)
+	if err != nil {
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "Baseline request failed"}
+	}
 
 	// 2. Send True Payload
 	trueTarget, _ := buildTarget(baseURL, param, truePayload)
-	trueResp, trueBody, err := ve.performRequest(trueTarget)
+	trueProbe, err := ve.requestSnapshot(trueTarget)
 	if err != nil {
-		return VerificationResult{IsConfirmed: false, Detail: "True payload request failed"}
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "True payload request failed"}
 	}
-	trueFp := utils.BuildResponseFingerprint(trueResp, []byte(trueBody))
-	trueNorm := utils.NormalizeBody(trueBody)
-	trueLen := len(trueNorm)
+	trueRepeat, err := ve.requestSnapshot(trueTarget)
+	if err != nil {
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "True payload repeat request failed"}
+	}
 
 	// 3. Send False Payload
 	falseTarget, _ := buildTarget(baseURL, param, falsePayload)
-	falseResp, falseBody, err := ve.performRequest(falseTarget)
+	falseProbe, err := ve.requestSnapshot(falseTarget)
 	if err != nil {
-		return VerificationResult{IsConfirmed: false, Detail: "False payload request failed"}
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "False payload request failed"}
 	}
-	falseFp := utils.BuildResponseFingerprint(falseResp, []byte(falseBody))
-	falseNorm := utils.NormalizeBody(falseBody)
-	falseLen := len(falseNorm)
+	falseRepeat, err := ve.requestSnapshot(falseTarget)
+	if err != nil {
+		return VerificationResult{IsConfirmed: false, IsSignal: false, Confidence: ConfidenceNoisy, Detail: "False payload repeat request failed"}
+	}
 
 	// 4. Analysis & Comparison
-	isConfirmed := false
-	confidence := "noisy"
-	detail := ""
-	evidence := fmt.Sprintf("Baseline Len: %d, True Len: %d, False Len: %d", baseLen, trueLen, falseLen)
+	controlAligned := probesEquivalent(originalProbe, baseProbe)
+	trueStable := probesEquivalent(trueProbe, trueRepeat)
+	falseStable := probesEquivalent(falseProbe, falseRepeat)
+	responseDiffStable := trueStable && falseStable && !probesEquivalent(trueProbe, falseProbe)
 
-	// Rule A: Boolean Blind (True matches Baseline, False differs)
-	// OR: True differs from Baseline, False matches Baseline (most common for SQLi)
-	trueMatchesBase := isSimilar(trueLen, baseLen) && trueResp.StatusCode == baseResp.StatusCode
-	falseMatchesBase := isSimilar(falseLen, baseLen) && falseResp.StatusCode == baseResp.StatusCode
-	trueFalseDifferent := !isSimilar(trueLen, falseLen) || trueResp.StatusCode != falseResp.StatusCode
+	falseMatchesControl := probesEquivalent(falseProbe, baseProbe) || probesEquivalent(falseProbe, originalProbe)
+	trueMatchesControl := probesEquivalent(trueProbe, baseProbe) || probesEquivalent(trueProbe, originalProbe)
+	bodyFingerprintStrong := responseDiffStable &&
+		!probesEquivalent(trueProbe, baseProbe) &&
+		!probesEquivalent(trueProbe, originalProbe) &&
+		trueProbe.NormalizedBody != falseProbe.NormalizedBody &&
+		trueProbe.NormalizedBody != baseProbe.NormalizedBody
 
-	if !trueMatchesBase && falseMatchesBase && trueFalseDifferent {
-		isConfirmed = true
-		confidence = "confirmed"
-		detail = "Boolean differential confirmed: TRUE payload changed response, FALSE payload matched baseline."
-	} else if trueMatchesBase && !falseMatchesBase && trueFalseDifferent {
-		// Less common but possible depending on logic
-		isConfirmed = true
-		confidence = "confirmed"
-		detail = "Boolean differential confirmed: TRUE payload matched baseline, FALSE payload changed response."
-	} else if !trueMatchesBase && !falseMatchesBase && trueFalseDifferent {
-		// Both changed baseline, but are different from each other
-		isConfirmed = true
-		confidence = "probable"
-		detail = "Behavioral change confirmed: Both TRUE and FALSE payloads changed response differently from baseline."
+	isSignal := responseDiffStable && falseMatchesControl && !trueMatchesControl
+	isConfirmed := isSignal && controlAligned && bodyFingerprintStrong
+
+	confidence := ConfidenceNoisy
+	detail := "No stable verification differential established."
+	switch {
+	case isConfirmed:
+		confidence = ConfidenceConfirmed
+		detail = "Boolean TRUE/FALSE differential confirmed: TRUE payload produced a stable non-baseline response, FALSE payload matched baseline/original control."
+	case isSignal:
+		confidence = ConfidenceProbable
+		detail = "Boolean TRUE/FALSE differential observed, but stable body fingerprint was not established. Manual verification required."
 	}
 
-	// Anti-FP: If True and False are identical but different from baseline, it's likely just reflection or WAF block
-	if !trueMatchesBase && !falseMatchesBase && !trueFalseDifferent {
-		isConfirmed = false
-		detail = "Potential False Positive: Both TRUE and FALSE payloads produced identical non-baseline responses (likely reflection or WAF)."
-	}
-
-	// Extra Check: Redirect/Auth Gate Consistency
-	if isConfirmed && utils.IsRedirectAwareIdentical(baseFp, falseFp) && !utils.IsRedirectAwareIdentical(baseFp, trueFp) {
-		confidence = "confirmed"
-	}
+	evidence := fmt.Sprintf(
+		"Original Len: %d, Baseline Len: %d, True Len: %d, False Len: %d | control_validation=%t | response_diff_stable=%t | body_fingerprint=%t",
+		len(originalProbe.NormalizedBody), len(baseProbe.NormalizedBody), len(trueProbe.NormalizedBody), len(falseProbe.NormalizedBody),
+		controlAligned && falseMatchesControl, responseDiffStable, bodyFingerprintStrong,
+	)
 
 	return VerificationResult{
-		IsConfirmed: isConfirmed,
-		Confidence:  confidence,
-		Detail:      detail,
-		Evidence:    evidence,
+		IsConfirmed:           isConfirmed,
+		IsSignal:              isSignal,
+		Confidence:            confidence,
+		Detail:                detail,
+		Evidence:              evidence,
+		ControlValidated:      controlAligned && falseMatchesControl,
+		ResponseDiffStable:    responseDiffStable,
+		BodyFingerprintStrong: bodyFingerprintStrong,
 	}
 }
 
@@ -118,6 +125,24 @@ func (ve *VerificationEngine) performRequest(target string) (*http.Response, str
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 	return resp, string(body), nil
+}
+
+type verificationProbe struct {
+	StatusCode     int
+	NormalizedBody string
+	Fingerprint    utils.ResponseFingerprint
+}
+
+func (ve *VerificationEngine) requestSnapshot(target string) (verificationProbe, error) {
+	resp, body, err := ve.performRequest(target)
+	if err != nil {
+		return verificationProbe{}, err
+	}
+	return verificationProbe{
+		StatusCode:     resp.StatusCode,
+		NormalizedBody: utils.NormalizeBody(body),
+		Fingerprint:    utils.BuildResponseFingerprint(resp, []byte(body)),
+	}, nil
 }
 
 func buildTarget(baseURL, param, value string) (string, error) {
@@ -141,4 +166,21 @@ func isSimilar(len1, len2 int) bool {
 	}
 	// 2% tolerance for large pages or 15 bytes for small ones
 	return diff < (len2/50) || diff < 15
+}
+
+func responsesEquivalent(statusA int, fpA utils.ResponseFingerprint, bodyA string, statusB int, fpB utils.ResponseFingerprint, bodyB string) bool {
+	if statusA != statusB {
+		return false
+	}
+	if utils.IsRedirectAwareIdentical(fpA, fpB) {
+		return true
+	}
+	if bodyA == bodyB {
+		return true
+	}
+	return false
+}
+
+func probesEquivalent(a, b verificationProbe) bool {
+	return responsesEquivalent(a.StatusCode, a.Fingerprint, a.NormalizedBody, b.StatusCode, b.Fingerprint, b.NormalizedBody)
 }

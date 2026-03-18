@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type XSLTPayload struct {
@@ -33,7 +33,7 @@ type xsltEvidence struct {
 	target        string
 	signal        string
 	severity      string
-	confidence    string
+	confidence    core.FindingConfidence
 	deterministic bool
 	baseHash      string
 	attackHash    string
@@ -116,7 +116,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				Target:     canonicalEndpoint(baseURL),
 				Detail:     "Endpoint consistently returns authentication gate behavior (302/401/403 with login/auth redirect patterns). Injection validation skipped until authenticated context is provided.",
 				Severity:   "Info",
-				Confidence: "noisy",
+				Confidence: core.ConfidenceNoisy,
 			})
 		}
 		return
@@ -138,7 +138,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	})
 }
 
-func evaluateXSLTSignal(p XSLTPayload, bodyLower, bodyStr, baseLower string) (signal, severity, confidence string, deterministic, matched bool) {
+func evaluateXSLTSignal(p XSLTPayload, bodyLower, bodyStr, baseLower string) (signal, severity string, confidence core.FindingConfidence, deterministic, matched bool) {
 	payloadLower := strings.ToLower(p.Payload)
 	if strings.Contains(bodyLower, payloadLower) {
 		return "", "", "", false, false
@@ -282,17 +282,17 @@ func maxSeverity(all []xsltEvidence) string {
 	return normalizeSeverity(best)
 }
 
-func bestConfidence(all []xsltEvidence) string {
-	best := "noisy"
-	bestRank := confidenceRank(best)
+func bestConfidence(all []xsltEvidence) core.FindingConfidence {
+	best := core.ConfidenceNoisy
+	bestRank := core.ConfidenceRank(best)
 	for _, ev := range all {
-		rank := confidenceRank(ev.confidence)
+		rank := core.ConfidenceRank(ev.confidence)
 		if rank > bestRank {
 			best = ev.confidence
 			bestRank = rank
 		}
 	}
-	return strings.ToLower(strings.TrimSpace(best))
+	return best.Normalized()
 }
 
 func severityRank(sev string) int {
@@ -322,17 +322,6 @@ func normalizeSeverity(sev string) string {
 		return "Low"
 	default:
 		return "Info"
-	}
-}
-
-func confidenceRank(conf string) int {
-	switch strings.ToLower(strings.TrimSpace(conf)) {
-	case "confirmed":
-		return 3
-	case "probable":
-		return 2
-	default:
-		return 1
 	}
 }
 

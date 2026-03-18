@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type DirCheck struct {
@@ -139,6 +140,46 @@ var CommonPaths = []DirCheck{
 	{"api/v1/contact", ""},
 }
 
+func discoveryChecks() []DirCheck {
+	checks := append([]DirCheck{}, CommonPaths...)
+	seen := make(map[string]bool, len(checks))
+	for _, check := range checks {
+		seen[strings.ToLower(strings.TrimSpace(check.Path))] = true
+	}
+
+	extraPaths := payloadrepo.LoadRepoLines(160,
+		"discovery/paths-common.txt",
+		"discovery/paths-admin.txt",
+		"discovery/paths-backups.txt",
+		"discovery/paths-api.txt",
+		"verify/file-interesting-names.txt",
+		"paths-common.txt",
+		"paths-admin.txt",
+		"paths-backups.txt",
+		"file-interesting-names.txt",
+	)
+	for _, raw := range extraPaths {
+		path := normalizeDiscoveryPath(raw)
+		if path == "" || seen[strings.ToLower(path)] {
+			continue
+		}
+		seen[strings.ToLower(path)] = true
+		checks = append(checks, DirCheck{Path: path})
+	}
+
+	return checks
+}
+
+func normalizeDiscoveryPath(raw string) string {
+	path := strings.TrimSpace(raw)
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return ""
+	}
+	return path
+}
+
 func isLikelyComposerLock(body string) bool {
 	return strings.Contains(body, "\"content-hash\":") &&
 		strings.Contains(body, "\"packages\":") &&
@@ -182,7 +223,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 25)
 
-	for _, check := range CommonPaths {
+	for _, check := range discoveryChecks() {
 		wg.Add(1)
 		go func(check DirCheck) {
 			defer wg.Done()
@@ -215,7 +256,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 								Target:     target,
 								Detail:     "Config file is readable only when TLS verification is disabled (certificate mismatch/validation error). Validate host ownership/scope before reporting.",
 								Severity:   "High",
-								Confidence: "probable",
+								Confidence: core.ConfidenceProbable,
 							})
 						}
 					}
@@ -324,7 +365,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 				if found {
 					findingType := "Path Discovered"
 					severity := "Info"
-					confidence := "probable"
+					confidence := core.ConfidenceProbable
 					detail := fmt.Sprintf("Accessible Path (200 OK, Len: %d)", bodyLen)
 
 					// 1. Path-based classification (conservative)
@@ -339,13 +380,13 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					if strings.HasSuffix(pathLower, "composer.lock") && isLikelyComposerLock(bodyStr) {
 						severity = "Medium"
 						findingType = "Sensitive Dependency Lock Exposed"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "Verified PHP Composer lock file. Exposes full dependency tree and versions."
 					}
 					if strings.HasSuffix(pathLower, "package-lock.json") && isLikelyPackageLock(bodyStr) {
 						severity = "Medium"
 						findingType = "Sensitive Dependency Lock Exposed"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "Verified Node.js package-lock file. Exposes full dependency tree and versions."
 					}
 
@@ -353,25 +394,25 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					if hasSecret {
 						severity = "Critical"
 						findingType = "Critical Data Leak in Path"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "Path contains extremely sensitive information (API Keys, Passwords, or Private Keys) in the response body."
 
 						// Specific check for API Leaks (e.g., /api/contact leaking messages)
 						if strings.Contains(pathLower, "api/") && (strings.Contains(bodyLower, "\"message\":") || strings.Contains(bodyLower, "\"private_message\":")) {
 							findingType = "Sensitive Information Leak via API Call"
 							severity = "Critical"
-							confidence = "confirmed"
+							confidence = core.ConfidenceConfirmed
 							detail = "Sensitive data leak: Unauthenticated user can view private messages or sensitive data via this API endpoint, which should be restricted to the Admin Panel."
 						}
 					} else if strings.Contains(pathLower, ".sql") && isLikelySQLDump(bodyStr) {
 						severity = "High"
 						findingType = "Database Dump Exposed"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "SQL dump content confirmed from response body."
 					} else if (strings.Contains(pathLower, ".env") || strings.Contains(pathLower, "credentials")) && hasConfigAssignments(bodyStr) {
 						severity = "High"
 						findingType = "Sensitive Config Exposed"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "Configuration-style key/value assignments found in response."
 					} else if strings.Contains(bodyLower, "index of /") || strings.Contains(bodyLower, "parent directory") {
 						if severity != "Critical" && severity != "High" {
@@ -384,26 +425,26 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					if strings.HasSuffix(pathLower, "web.config") && isValidWebConfig(bodyLower) {
 						findingType = "Sensitive Config/Backup Exposed"
 						severity = "High"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "web.config content is directly readable and contains valid IIS/XML configuration directives."
 					}
 					if strings.HasSuffix(pathLower, ".htaccess") && isValidHtaccess(bodyLower) {
 						findingType = "Sensitive Config/Backup Exposed"
 						severity = "High"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = ".htaccess content is directly readable and contains valid Apache directives."
 					}
 					if strings.HasSuffix(pathLower, "config.php") && isLikelyPHPConfigSource(bodyStr, contentType, isHTML) {
 						findingType = "Sensitive Config/Backup Exposed"
 						severity = "High"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = "config.php appears directly readable with raw PHP configuration/source markers."
 					}
 
 					if strings.Contains(check.Path, "%00") {
 						findingType = "Null Byte Bypass"
 						severity = "High"
-						confidence = "confirmed"
+						confidence = core.ConfidenceConfirmed
 						detail = fmt.Sprintf("Bypassed protection using Null Byte (%%00). Path: %s. Content Verified.", check.Path)
 					}
 

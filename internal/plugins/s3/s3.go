@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
+	"sort"
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
 )
 
 var (
@@ -21,9 +24,64 @@ var (
 	}
 )
 
+func mergedSensitiveFiles() []string {
+	files := []string{"backup.sql", "users.json", "config.json", ".env", "database.yml"}
+	seen := make(map[string]bool, len(files))
+	for _, file := range files {
+		seen[strings.ToLower(file)] = true
+	}
+
+	extra := payloadrepo.LoadRepoLines(24,
+		"verify/file-interesting-names.txt",
+		"file-interesting-names.txt",
+	)
+	for _, raw := range extra {
+		name := strings.TrimSpace(path.Base(raw))
+		if name == "." || name == "/" || name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		lower := strings.ToLower(name)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		files = append(files, name)
+	}
+	return files
+}
+
+func listingInterestingKeywordHits(body string) []string {
+	keywords := payloadrepo.LoadRepoLines(24,
+		"verify/response-interesting-keywords.txt",
+		"response-interesting-keywords.txt",
+	)
+	if len(keywords) == 0 {
+		return nil
+	}
+
+	bodyLower := strings.ToLower(body)
+	seen := map[string]bool{}
+	var hits []string
+	for _, raw := range keywords {
+		keyword := strings.ToLower(strings.TrimSpace(raw))
+		if keyword == "" || seen[keyword] || !strings.Contains(bodyLower, keyword) {
+			continue
+		}
+		seen[keyword] = true
+		hits = append(hits, keyword)
+		if len(hits) >= 6 {
+			break
+		}
+	}
+	sort.Strings(hits)
+	return hits
+}
+
 // Scan performs S3 bucket enumeration based on the domain name
 func Scan(domain string, client *http.Client, wg *sync.WaitGroup, onFound func(core.Finding)) {
-	defer wg.Done()
+	if wg != nil {
+		defer wg.Done()
+	}
 	fmt.Printf("[*] Starting S3 Bucket Enumeration for %s...\n", domain)
 
 	// Clean domain (remove TLD for base name usage, e.g. google.com -> google)
@@ -78,7 +136,7 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 		fmt.Sprintf("http://%s.blob.core.windows.net/public?restype=container&comp=list", bucketName),
 	}
 
-	sensitiveFiles := []string{"backup.sql", "users.json", "config.json", ".env", "database.yml"}
+	sensitiveFiles := mergedSensitiveFiles()
 
 	for _, u := range urls {
 		resp, err := client.Get(u)
@@ -110,6 +168,9 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 
 			detail := "Public listable bucket confirmed."
 			severity := "High"
+			if hits := listingInterestingKeywordHits(bodyStr); len(hits) > 0 {
+				detail += fmt.Sprintf(" Listing keywords: %s.", strings.Join(hits, ", "))
+			}
 
 			// Check for sensitive files
 			var foundFiles []string
@@ -147,7 +208,7 @@ func checkBucket(bucketName string, client *http.Client, onFound func(core.Findi
 					Target:     baseURL,
 					Detail:     detail,
 					Severity:   severity,
-					Confidence: "confirmed",
+					Confidence: core.ConfidenceConfirmed,
 				})
 			} else {
 				fmt.Printf("[*] Skipping Cloud Storage bucket with unclear ownership: %s\n", u)

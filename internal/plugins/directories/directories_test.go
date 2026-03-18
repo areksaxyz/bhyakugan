@@ -1,6 +1,12 @@
 package directories
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+)
 
 func TestHasStrongSecretEvidence(t *testing.T) {
 	if hasStrongSecretEvidence("<html>hello world</html>") {
@@ -45,4 +51,38 @@ $db_password = 'secret';
 	if isLikelyPHPConfigSource(html, "text/html", true) {
 		t.Fatal("expected html fallback page to be rejected")
 	}
+}
+
+func TestDiscoveryChecksIncludeInterestingFileWordlist(t *testing.T) {
+	restoreWordlistsRoot(t)
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("test"), 0644); err != nil {
+		t.Fatalf("write README failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "verify"), 0755); err != nil {
+		t.Fatalf("mkdir verify failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "verify", "file-interesting-names.txt"), []byte("tenant-backup.zip\n"), 0644); err != nil {
+		t.Fatalf("write wordlist failed: %v", err)
+	}
+	payloadrepo.SetWordlistsRoot(root)
+
+	checks := discoveryChecks()
+	for _, check := range checks {
+		if check.Path == "tenant-backup.zip" {
+			return
+		}
+	}
+	t.Fatal("expected discovery checks to include verify/file-interesting-names.txt entries")
+}
+
+func restoreWordlistsRoot(t *testing.T) {
+	t.Helper()
+	original := payloadrepo.WordlistsRoot()
+	t.Cleanup(func() {
+		if original != "" {
+			payloadrepo.SetWordlistsRoot(original)
+		}
+	})
 }

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var (
@@ -147,7 +147,7 @@ func checkReverseProxyBypass(baseURL string, client *http.Client, onFound func(c
 			Target:     baseURL,
 			Detail:     detail,
 			Severity:   severity,
-			Confidence: "confirmed",
+			Confidence: core.ConfidenceConfirmed,
 		})
 	}
 }
@@ -206,7 +206,7 @@ func checkHeaderMutationTrust(url string, client *http.Client, onFound func(core
 			Target:     url,
 			Detail:     fmt.Sprintf("Server response changed when mutating proxy-related headers. This suggests the server trusts and processes these headers, which could lead to bypasses if misconfigured.\nHeaders observed affecting response:\n- %s", strings.Join(trustedHeaders, "\n- ")),
 			Severity:   "Low", // Behavioral trust is Low unless it bypasses an actual restriction (which checkReverseProxyBypass handles)
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	}
 }
@@ -238,7 +238,7 @@ func checkNginxTraversal(baseURL string, client *http.Client, onFound func(core.
 				Target:     target,
 				Detail:     "Off-by-slash alias traversal leaked .env file",
 				Severity:   "Critical",
-				Confidence: "confirmed",
+				Confidence: core.ConfidenceConfirmed,
 			})
 		}
 	}
@@ -263,7 +263,7 @@ func checkTemplateInjection(baseURL string, client *http.Client, onFound func(co
 				Target:     baseURL,
 				Detail:     "Caddy/Go Template Injection via headers confirmed",
 				Severity:   "Critical",
-				Confidence: "confirmed",
+				Confidence: core.ConfidenceConfirmed,
 			})
 		}
 	}

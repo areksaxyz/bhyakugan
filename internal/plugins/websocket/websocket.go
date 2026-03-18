@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var WSEndpoints = []string{
@@ -72,7 +72,7 @@ func checkHandshake(target string, client *http.Client, onFound func(core.Findin
 			Target:     target,
 			Detail:     detail,
 			Severity:   severity,
-			Confidence: "probable",
+			Confidence: core.ConfidenceProbable,
 		})
 	} else if resp.StatusCode == 400 || resp.StatusCode == 426 {
 		// 426 Upgrade Required or 400 might still indicate a WS endpoint exists
@@ -83,7 +83,7 @@ func checkHandshake(target string, client *http.Client, onFound func(core.Findin
 				Target:     target,
 				Detail:     "Potential WebSocket endpoint discovered.",
 				Severity:   "Info",
-				Confidence: "probable",
+				Confidence: core.ConfidenceProbable,
 			})
 		}
 	}

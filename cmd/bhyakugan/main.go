@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/output"
-	"github.com/yupiyy/bhyakugan/internal/payloadrepo"
-	"github.com/yupiyy/bhyakugan/internal/recon"
-	"github.com/yupiyy/bhyakugan/internal/scanner"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/output"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/recon"
+	"github.com/areksaxyz/bhyakugan/internal/scanner"
 )
 
 var version = "4.0.0"
@@ -48,10 +48,10 @@ func main() {
 	payloadsPtr := flag.String("payloads", "", "Path ke file wordlist kustom (Opsional)")
 	timeoutPtr := flag.Int("timeout", 10, "HTTP Timeout dalam detik")
 	threadsPtr := flag.Int("threads", 0, "Jumlah concurrent worker (0 = auto)")
-	modePtr := flag.String("mode", "balanced", "Mode scan: strict, balanced, aggressive, bounty, lab")
+	modePtr := flag.String("mode", "public", "Mode scan: public, extended, research (legacy aliases: strict, balanced, aggressive, bounty, lab)")
 	strictValidationPtr := flag.Bool("strict-validation", false, "Filter ketat: drop temuan heuristik-only")
 	fastPtr := flag.Bool("fast", false, "Profil triage cepat (mengurangi modul berat)")
-	maxEndpointsPtr := flag.Int("max-endpoints", 0, "Batas endpoint per host (0 = auto by mode; fast=25, strict=75, balanced=100, aggressive=150)")
+	maxEndpointsPtr := flag.Int("max-endpoints", 0, "Batas endpoint per host (0 = auto by mode; fast=25, public=75, extended=100, research=150)")
 	pattPtr := flag.String("patt", "", "Path ke repo PayloadsAllTheThings (opsional)")
 
 	flag.Parse()
@@ -115,7 +115,7 @@ func main() {
 		fmt.Println("\n[!] Scan interrupted by user. Finalizing report...")
 		findingsMu.Lock()
 		if len(allFindings) > 0 {
-			saveReport(allFindings, liveHosts, mainTarget)
+			saveReport(allFindings, liveHosts, mainTarget, *modePtr)
 		} else {
 			fmt.Println("[*] No findings to report.")
 		}
@@ -175,11 +175,11 @@ func main() {
 
 	// Generate Final Report
 	findingsMu.Lock()
-	saveReport(allFindings, liveHosts, mainTarget)
+	saveReport(allFindings, liveHosts, mainTarget, *modePtr)
 	findingsMu.Unlock()
 }
 
-func saveReport(allFindings []core.Finding, liveHosts []string, mainTarget string) {
+func saveReport(allFindings []core.Finding, liveHosts []string, mainTarget string, mode string) {
 	if len(allFindings) == 0 {
 		return
 	}
@@ -191,7 +191,7 @@ func saveReport(allFindings []core.Finding, liveHosts []string, mainTarget strin
 	reportName := filepath.Join(outputDir, fmt.Sprintf("report_%s.html", safeTarget))
 
 	fmt.Printf("\n[*] Generating HTML Report: %s\n", reportName)
-	err := output.GenerateHTML(reportName, allFindings, liveHosts, mainTarget)
+	err := output.GenerateHTML(reportName, allFindings, liveHosts, mainTarget, scanner.NormalizeRuntimeMode(mode))
 	if err != nil {
 		fmt.Printf("[!] Error generating report: %v\n", err)
 	} else {

@@ -1,0 +1,123 @@
+<div class="header">
+            <div>
+                <h1>Bhyakugan Report</h1>
+                <p style="margin: 8px 0 0 0; color: var(--text-muted); font-weight: 500;">Public Exposure and Recon Outcome</p>
+            </div>
+            <div class="header-meta">
+                <p>Target: <a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a></p>
+                <p>Mode: <strong>public</strong></p>
+                <p>Date: <strong>NORMALIZED_DATE</strong></p>
+                <p>Validated Scope Count: <strong>1</strong></p>
+            </div>
+        </div>
+
+        <div class="dashboard-title">Exposure Overview</div>
+        <div class="dashboard">
+            <div class="card exposure"><h3>1</h3><p>Validated Exposures</p></div>
+            <div class="card signal"><h3>2</h3><p>Probable Sensitive Signals</p></div>
+            <div class="card recon"><h3>3</h3><p>Recon Surfaces</p></div>
+            <div class="card hosts"><h3>1</h3><p>Live Hosts</p></div>
+        </div>
+
+        <div class="dashboard-title">Validated Severity</div>
+        <div class="dashboard">
+            <div class="card critical"><h3>0</h3><p>Critical</p></div>
+            <div class="card high"><h3>1</h3><p>High</p></div>
+            <div class="card medium"><h3>0</h3><p>Medium</p></div>
+            <div class="card low"><h3>0</h3><p>Low</p></div>
+        </div>
+<div class="section-title">
+            <span class="section-badge bg-High">Validated Public Exposures</span> (1)
+        </div>
+        <div class="table-container">
+            <table>
+                <thead><tr><th class="col-type">Type</th><th class="col-target">Target</th><th class="col-severity">Severity</th><th>Confidence</th><th class="col-score">Exploitability</th><th class="col-detail">Evidence / Details</th></tr></thead>
+                <tbody>
+            <tr>
+                <td class="col-type">SQL Injection</td>
+                <td class="col-target">Endpoint Family (example.com/oracle)</td>
+                <td class="col-severity"><span class="section-badge bg-High">High</span></td>
+                <td>CONFIRMED</td>
+                <td class="col-score">90/100</td>
+                <td class="col-detail">Root-cause cluster confirmed via 1 vectors/payloads.
+Affected signatures: Oracle SQLi (Length Filter Bypass)
+Affected endpoints: 1
+- https://example.com/oracle
+Representative evidence:
+1. endpoint=https://example.com/oracle proof=payload a (true): n</td>
+            </tr></tbody></table></div>
+        <div class="section-title">
+            <span class="section-badge bg-Medium">Probable Sensitive Signals</span> (2)
+        </div>
+        <div class="table-container">
+            <table>
+                <thead><tr><th class="col-type">Type</th><th class="col-target">Target</th><th class="col-severity">Severity</th><th>Confidence</th><th class="col-score">Exploitability</th><th class="col-detail">Evidence / Details</th></tr></thead>
+                <tbody>
+            <tr>
+                <td class="col-type">SQL Injection</td>
+                <td class="col-target">Endpoint Family (example.com/api)</td>
+                <td class="col-severity"><span class="section-badge bg-Medium">Medium</span></td>
+                <td>PROBABLE</td>
+                <td class="col-score">35/100</td>
+                <td class="col-detail">Root-cause cluster confirmed via 1 vectors/payloads.
+Affected signatures: SQL Injection (Boolean-Based)
+Affected endpoints: 1
+- https://example.com/api/items
+Representative evidence:
+1. endpoint=https://example.com/api/items proof=boolean-based sql injection signal for string boolean blind (single quote) in param &#39;id&#39;. boolean true/false differential observed, but stable body fingerprint was not established. manual verification required. (original</td>
+            </tr>
+            <tr>
+                <td class="col-type">XPath Injection</td>
+                <td class="col-target">Host-level Root Cause (example.com)</td>
+                <td class="col-severity"><span class="section-badge bg-Medium">Medium</span></td>
+                <td>PROBABLE</td>
+                <td class="col-score">35/100</td>
+                <td class="col-detail">Root-cause cluster confirmed via 1 vectors/payloads.
+Affected signatures: XPath Injection
+Affected endpoints: 1
+Affected parameters: view
+- https://example.com/akademik
+Representative evidence:
+1. endpoint=https://example.com/akademik proof=n. payload=xpath boolean pair param=view signal=boolean true/false differential observed, but stable body fingerprint was not established. manual verification required. fingerprint=aaaan-&gt;bbbbn target=url</td>
+            </tr></tbody></table></div>
+        <div class="section-title">
+            <span class="section-badge bg-Info">Recon / Attack Surface</span> (3)
+        </div>
+        <div class="table-container">
+            <table>
+                <thead><tr><th class="col-type">Type</th><th class="col-target">Target</th><th class="col-severity">Severity</th><th>Confidence</th><th class="col-detail">Evidence / Details</th></tr></thead>
+                <tbody>
+            <tr>
+                <td class="col-type">Recon: JS Sourcemap</td>
+                <td class="col-target"><a href="https://example.com/static/app.js.map" target="_blank" rel="noopener noreferrer">https://example.com/static/app.js.map</a></td>
+                <td class="col-severity"><span class="section-badge bg-Low">Low</span></td>
+                <td>PROBABLE</td>
+                
+                <td class="col-detail">Javascript sourcemap file discovered. Can be used to recover original source code.
+Evidence Quality: 50/100 | deterministic=false | control_validation=false | response_diff_entropy=false | body_fingerprint=false | fp_risk=high | tier=tier3
+Exploit Depth: 1/5 (heuristic_signal)</td>
+            </tr>
+            <tr>
+                <td class="col-type">Surface Discovery</td>
+                <td class="col-target"><a href="https://example.com/robots.txt" target="_blank" rel="noopener noreferrer">https://example.com/robots.txt</a></td>
+                <td class="col-severity"><span class="section-badge bg-Info">Info</span></td>
+                <td>PROBABLE</td>
+                
+                <td class="col-detail">Accessible Path (200 OK, Len: 42)
+Evidence Quality: 45/100 | deterministic=false | control_validation=false | response_diff_entropy=false | body_fingerprint=false | fp_risk=high | tier=tier3
+Exploit Depth: 1/5 (heuristic_signal)</td>
+            </tr>
+            <tr>
+                <td class="col-type">Auth Surface: Login Form</td>
+                <td class="col-target"><a href="https://example.com/login" target="_blank" rel="noopener noreferrer">https://example.com/login</a></td>
+                <td class="col-severity"><span class="section-badge bg-Info">Info</span></td>
+                <td>PROBABLE</td>
+                
+                <td class="col-detail">Login form with password input discovered.
+Evidence Quality: 35/100 | deterministic=false | control_validation=false | response_diff_entropy=false | body_fingerprint=false | fp_risk=very-high | tier=tier3
+Exploit Depth: 1/5 (heuristic_signal)</td>
+            </tr></tbody></table></div>
+        <div style="text-align: center; margin-top: 50px; padding: 20px; color: #b2bec3; font-size: 0.9rem;">
+            Generated by <strong>Bhyakugan Scanner</strong> • Automated Security Analysis
+        </div>
+    </div></body></html>

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 var staticExtensions = []string{`.css`, `.js`, `.avif`, `.png`, `.jpg`, `.svg`}
@@ -96,7 +96,7 @@ func Scan(baseURL string, client *http.Client, onFound func(core.Finding)) {
 					Target:     target,
 					Detail:     detail,
 					Severity:   severity,
-					Confidence: "probable",
+					Confidence: core.ConfidenceProbable,
 				})
 				return
 			}

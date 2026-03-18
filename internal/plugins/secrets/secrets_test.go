@@ -3,7 +3,7 @@ package secrets
 import (
 	"testing"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/core"
 )
 
 func TestDetectInContent_DocsBackupReferenceIsIgnored(t *testing.T) {

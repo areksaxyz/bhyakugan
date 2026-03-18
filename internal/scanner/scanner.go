@@ -10,32 +10,34 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/crawler"
-	"github.com/yupiyy/bhyakugan/internal/plugins/directories"
-	"github.com/yupiyy/bhyakugan/internal/plugins/git"
-	"github.com/yupiyy/bhyakugan/internal/plugins/graphql"
-	"github.com/yupiyy/bhyakugan/internal/plugins/idor"
-	"github.com/yupiyy/bhyakugan/internal/plugins/jsanalyzer"
-	"github.com/yupiyy/bhyakugan/internal/plugins/jwt"
-	"github.com/yupiyy/bhyakugan/internal/plugins/nosqli"
-	"github.com/yupiyy/bhyakugan/internal/plugins/ormleak"
-	"github.com/yupiyy/bhyakugan/internal/plugins/pp"
-	"github.com/yupiyy/bhyakugan/internal/plugins/proxy"
-	"github.com/yupiyy/bhyakugan/internal/plugins/rce"
-	"github.com/yupiyy/bhyakugan/internal/plugins/recon_html"
-	"github.com/yupiyy/bhyakugan/internal/plugins/saml"
-	"github.com/yupiyy/bhyakugan/internal/plugins/secrets"
-	"github.com/yupiyy/bhyakugan/internal/plugins/sqli"
-	"github.com/yupiyy/bhyakugan/internal/plugins/ssrf"
-	"github.com/yupiyy/bhyakugan/internal/plugins/ssti"
-	"github.com/yupiyy/bhyakugan/internal/plugins/typejuggling"
-	"github.com/yupiyy/bhyakugan/internal/plugins/vulns"
-	"github.com/yupiyy/bhyakugan/internal/plugins/wcd"
-	"github.com/yupiyy/bhyakugan/internal/plugins/websocket"
-	"github.com/yupiyy/bhyakugan/internal/plugins/xpath"
-	"github.com/yupiyy/bhyakugan/internal/plugins/xslt"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/crawler"
+	"github.com/areksaxyz/bhyakugan/internal/payloadrepo"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/directories"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/git"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/graphql"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/idor"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/jsanalyzer"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/jwt"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/nosqli"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/ormleak"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/pp"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/proxy"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/rce"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/recon_html"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/s3"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/saml"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/secrets"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/sqli"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/ssrf"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/ssti"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/typejuggling"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/vulns"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/wcd"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/websocket"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/xpath"
+	"github.com/areksaxyz/bhyakugan/internal/plugins/xslt"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 type Options struct {
@@ -116,12 +118,15 @@ func profileTarget(urlStr string, client *http.Client) core.ScanContext {
 }
 
 func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
-	mode := normalizeMode(opts.Mode)
+	runtimeMode := NormalizeRuntimeMode(opts.Mode)
+	evidenceMode := normalizeMode(opts.Mode)
+	payloadrepo.SetScanMode(evidenceMode)
 	deduper := newFindingDeduper()
+	plan := planForRuntimeMode(runtimeMode)
 
 	reportFinding := func(f core.Finding) {
 		f = EnrichFindingForReporting(f)
-		processed, ok := EvaluateFindingWithOptions(mode, opts.StrictValidation, f)
+		processed, ok := EvaluateFindingWithOptions(evidenceMode, opts.StrictValidation, f)
 		if !ok {
 			return
 		}
@@ -151,9 +156,9 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	crawlSem := make(chan struct{}, crawlConcurrency)
 	jsSem := make(chan struct{}, jsConcurrency)
 	followupSem := make(chan struct{}, crawlConcurrency)
-	maxEndpoints := opts.MaxEndpoints
-	if maxEndpoints <= 0 {
-		maxEndpoints = defaultMaxEndpoints(mode, opts.Fast)
+	maxEndpoints := resolveMaxEndpoints(opts.MaxEndpoints, runtimeMode, opts.Fast)
+	if opts.MaxEndpoints <= 0 {
+		fmt.Printf("[*] Endpoint cap: auto=%d (mode=%s fast=%t)\n", maxEndpoints, runtimeMode, opts.Fast)
 	}
 
 	var scanEndpoint func(string, bool)
@@ -172,7 +177,6 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 		}
 	}
 
-	// Wrap reportFinding to auto-scan newly discovered paths
 	wrappedReportFinding := func(f core.Finding) {
 		reportFinding(f)
 		if f.Type == "Path Discovered" || f.Type == "Sensitive Config/Backup Exposed" {
@@ -217,37 +221,68 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			}()
 		}
 
-		hasParams := strings.Contains(url, "?")
-		runP(func() { secrets.Scan(url, client, wrappedReportFinding) })
+		endpointPlugins := endpointExecutionPlugins(plan, url, isRoot, opts.Fast)
+		if endpointPlugins.Enabled(pluginSecrets) {
+			runP(func() { secrets.Scan(url, client, wrappedReportFinding) })
+		}
 
-		if !opts.Fast && (isRoot || hasParams) {
-			runP(func() { vulns.Scan(url, client, opts.PayloadFile, reportFinding) }) // vulns.Scan takes reportFinding
+		if endpointPlugins.Enabled(pluginVulns) || endpointPlugins.Enabled(pluginOpenRedirect) {
+			if endpointPlugins.Enabled(pluginVulns) {
+				runP(func() { vulns.Scan(url, client, opts.PayloadFile, reportFinding) })
+			} else if endpointPlugins.Enabled(pluginOpenRedirect) {
+				runP(func() { vulns.ScanOpenRedirect(url, client, wrappedReportFinding) })
+			}
+		}
+
+		if endpointPlugins.Enabled(pluginRCE) {
 			runP(func() { rce.Scan(url, client, ctx, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginNoSQLi) {
 			runP(func() { nosqli.Scan(url, client, ctx, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginSQLi) {
 			runP(func() { sqli.Scan(url, client, ctx, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginSSRF) {
 			runP(func() { ssrf.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginSSTI) {
 			runP(func() { ssti.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginIDOR) {
 			runP(func() { idor.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginXPath) {
 			runP(func() { xpath.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginXSLT) {
 			runP(func() { xslt.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginPP) {
 			runP(func() { pp.Scan(url, client, wrappedReportFinding) })
 		}
-
-		if !opts.Fast && (isRoot || strings.Contains(strings.ToLower(url), "login") || strings.Contains(strings.ToLower(url), "auth")) {
+		if endpointPlugins.Enabled(pluginWCD) {
 			runP(func() { wcd.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginTypeJuggle) {
 			runP(func() { typejuggling.Scan(url, client, ctx, wrappedReportFinding) })
 		}
-
-		if !opts.Fast {
+		if endpointPlugins.Enabled(pluginProxy) {
 			runP(func() { proxy.Scan(url, client, wrappedReportFinding) })
 		}
-
-		if isRoot {
-			if !opts.Fast {
-				runP(func() { saml.Scan(url, client, wrappedReportFinding) })
-			}
+		if endpointPlugins.Enabled(pluginSAML) {
+			runP(func() { saml.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginGraphQL) {
 			runP(func() { graphql.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginGit) {
 			runP(func() { git.Scan(url, client, wrappedReportFinding) })
+		}
+		if endpointPlugins.Enabled(pluginS3) {
+			if domain := targetDomainForPublicStorage(url); domain != "" {
+				runP(func() { s3.Scan(domain, client, nil, wrappedReportFinding) })
+			}
 		}
 		pWg.Wait()
 	}
@@ -264,12 +299,16 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 
 	var mainBody string
 	var mainHeaders http.Header
+	topLevelPlugins := topLevelExecutionPlugins(plan, false, opts.Fast)
 	if errM == nil && respM != nil {
 		bodyM, _ := io.ReadAll(io.LimitReader(io.LimitReader(respM.Body, 5*1024*1024), 5*1024*1024))
 		mainBody = string(bodyM)
 		mainHeaders = respM.Header
 		respM.Body.Close()
-		recon_html.Scan(opts.Target, mainBody, wrappedReportFinding)
+		topLevelPlugins = topLevelExecutionPlugins(plan, mainBody != "", opts.Fast)
+		if topLevelPlugins.Enabled(pluginReconHTML) {
+			recon_html.Scan(opts.Target, mainBody, wrappedReportFinding)
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -285,14 +324,20 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 	}
 
 	run("Endpoint Scan (Target)", func() { scanEndpoint(opts.Target, true) })
-	run("Directories", func() { directories.Scan(opts.Target, client, wrappedReportFinding) })
-	if !opts.Fast {
+	if topLevelPlugins.Enabled(pluginDirectories) {
+		run("Directories", func() { directories.Scan(opts.Target, client, wrappedReportFinding) })
+	}
+	if topLevelPlugins.Enabled(pluginWebSocket) {
 		run("WebSocket", func() { websocket.Scan(opts.Target, client, wrappedReportFinding) })
+	}
+	if topLevelPlugins.Enabled(pluginORMLeak) {
 		run("ORM Leak", func() { ormleak.Scan(opts.Target, client, wrappedReportFinding) })
 	}
 
 	if mainBody != "" {
-		run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, wrappedReportFinding) })
+		if topLevelPlugins.Enabled(pluginJWT) {
+			run("JWT", func() { jwt.Scan(opts.Target, client, mainBody, mainHeaders, wrappedReportFinding) })
+		}
 
 		wg.Add(1)
 		go func() {
@@ -313,7 +358,6 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 			visited[opts.Target] = true
 			visitedMu.Unlock()
 
-			// Start Consumer
 			go func() {
 				for job := range queue {
 					crawlSem <- struct{}{}
@@ -321,16 +365,14 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						defer func() { <-crawlSem }()
 						defer crawlWg.Done()
 
-						if current.Depth > 0 {
-							if !isLikelyStaticAssetURL(current.URL) {
-								scanWg.Add(1)
-								go func(l string) {
-									defer scanWg.Done()
-									scanSem <- struct{}{}
-									defer func() { <-scanSem }()
-									scanEndpoint(l, false)
-								}(current.URL)
-							}
+						if current.Depth > 0 && !isLikelyStaticAssetURL(current.URL) {
+							scanWg.Add(1)
+							go func(l string) {
+								defer scanWg.Done()
+								scanSem <- struct{}{}
+								defer func() { <-scanSem }()
+								scanEndpoint(l, false)
+							}(current.URL)
 						}
 
 						if current.Depth >= maxDepth {
@@ -354,7 +396,9 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 								body, _ := io.ReadAll(io.LimitReader(io.LimitReader(resp.Body, 5*1024*1024), 5*1024*1024))
 								bodyStr := string(body)
 								resp.Body.Close()
-								recon_html.Scan(current.URL, bodyStr, wrappedReportFinding)
+								if topLevelPlugins.Enabled(pluginReconHTML) {
+									recon_html.Scan(current.URL, bodyStr, wrappedReportFinding)
+								}
 								links := crawler.ExtractLinks(current.URL, bodyStr)
 								linksMu.Lock()
 								extractedLinks = append(extractedLinks, links...)
@@ -376,7 +420,9 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 								bodyMobile, _ := io.ReadAll(io.LimitReader(io.LimitReader(respMobile.Body, 5*1024*1024), 5*1024*1024))
 								bodyMobileStr := string(bodyMobile)
 								respMobile.Body.Close()
-								recon_html.Scan(current.URL, bodyMobileStr, wrappedReportFinding)
+								if topLevelPlugins.Enabled(pluginReconHTML) {
+									recon_html.Scan(current.URL, bodyMobileStr, wrappedReportFinding)
+								}
 								mLinks := crawler.ExtractLinks(current.URL, bodyMobileStr)
 								linksMu.Lock()
 								extractedLinks = append(extractedLinks, mLinks...)
@@ -400,27 +446,27 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 				}
 			}()
 
-			// Start initial job
 			crawlWg.Add(1)
 			queue <- CrawlJob{URL: opts.Target, Depth: 0}
 
-			// Wait for all crawling to finish, then close queue
 			crawlWg.Wait()
 			close(queue)
-
-			// Wait for all scans triggered by crawling to finish
 			scanWg.Wait()
 		}()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			jsRegex := regexp.MustCompile(`src=["'](.*?\.js)["']`)
-			matches := jsRegex.FindAllStringSubmatch(mainBody, -1)
+		if topLevelPlugins.Enabled(pluginJSAnalyzer) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				jsRegex := regexp.MustCompile(`src=["'](.*?\.js)["']`)
+				matches := jsRegex.FindAllStringSubmatch(mainBody, -1)
 
-			var jsWg sync.WaitGroup
-			for _, m := range matches {
-				if len(m) > 1 {
+				var jsWg sync.WaitGroup
+				for _, m := range matches {
+					if len(m) <= 1 {
+						continue
+					}
+
 					jsURL := m[1]
 					if !strings.HasPrefix(jsURL, "http") {
 						u, _ := url.Parse(opts.Target)
@@ -438,32 +484,30 @@ func Start(opts Options, client *http.Client, onFound func(core.Finding)) {
 						select {
 						case jsSem <- struct{}{}:
 							defer func() { <-jsSem }()
-							jsanalyzer.ScanJS(u, client, nil, wrappedReportFinding) // Pass nil as we handle WaitGroup locally in this goroutine
+							jsanalyzer.ScanJS(u, client, nil, wrappedReportFinding)
 						case <-time.After(4 * time.Second):
-							// Don't wait forever for a slot in jsSem
 							return
 						}
 					}(jsURL)
 				}
-			}
 
-			// Wait for all JS in this host with a timeout
-			done := make(chan struct{})
-			go func() {
-				jsWg.Wait()
-				close(done)
+				done := make(chan struct{})
+				go func() {
+					jsWg.Wait()
+					close(done)
+				}()
+
+				jsTimeout := 2 * time.Minute
+				if opts.Fast {
+					jsTimeout = 45 * time.Second
+				}
+				select {
+				case <-done:
+				case <-time.After(jsTimeout):
+					fmt.Printf("[!] JS Analysis timeout for %s\n", opts.Target)
+				}
 			}()
-
-			jsTimeout := 2 * time.Minute
-			if opts.Fast {
-				jsTimeout = 45 * time.Second
-			}
-			select {
-			case <-done:
-			case <-time.After(jsTimeout):
-				fmt.Printf("[!] JS Analysis timeout for %s\n", opts.Target)
-			}
-		}()
+		}
 	}
 	wg.Wait()
 	fmt.Printf("[*] Scan Complete for %s\n", opts.Target)
@@ -474,14 +518,21 @@ func defaultMaxEndpoints(mode string, fast bool) int {
 		return 25
 	}
 
-	switch normalizeMode(mode) {
-	case "aggressive":
+	switch NormalizeRuntimeMode(mode) {
+	case RuntimeModeResearch:
 		return 150
-	case "balanced":
+	case RuntimeModeExtended:
 		return 100
 	default:
 		return 75
 	}
+}
+
+func resolveMaxEndpoints(requested int, mode string, fast bool) int {
+	if requested > 0 {
+		return requested
+	}
+	return defaultMaxEndpoints(mode, fast)
 }
 
 func enqueueCrawlJob(queue chan<- CrawlJob, job CrawlJob, crawlWg *sync.WaitGroup) bool {
@@ -510,11 +561,11 @@ func registerEndpointScan(scannedEndpoints map[string]bool, url string, isRoot b
 	return true, false
 }
 
-func classifyConfidence(f core.Finding) string {
+func classifyConfidence(f core.Finding) core.FindingConfidence {
 	quality, explicitQuality := deriveEvidenceQuality(f)
-	baseConfidence := "probable"
-	if strings.TrimSpace(f.Confidence) != "" {
-		baseConfidence = strings.ToLower(strings.TrimSpace(f.Confidence))
+	baseConfidence := core.ConfidenceProbable
+	if f.Confidence.Normalized() != core.ConfidenceProbable || strings.TrimSpace(string(f.Confidence)) != "" {
+		baseConfidence = f.Confidence.Normalized()
 		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 	d := strings.ToLower(f.Detail)
@@ -525,7 +576,7 @@ func classifyConfidence(f core.Finding) string {
 		strings.Contains(d, "invalid") ||
 		strings.Contains(d, "potential ") ||
 		strings.Contains(d, "no confirmed exploitation") {
-		baseConfidence = "noisy"
+		baseConfidence = core.ConfidenceNoisy
 		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 
@@ -536,14 +587,14 @@ func classifyConfidence(f core.Finding) string {
 		strings.Contains(d, "source disclosure") ||
 		strings.Contains(d, "sensitive data leak") ||
 		strings.Contains(d, "introspection query enabled") {
-		baseConfidence = "confirmed"
+		baseConfidence = core.ConfidenceConfirmed
 		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 
 	if strings.Contains(t, "path discovered") ||
 		strings.Contains(t, "recon") ||
 		strings.Contains(t, "jwt discovered") {
-		baseConfidence = "probable"
+		baseConfidence = core.ConfidenceProbable
 		return syncConfidenceWithEvidence(baseConfidence, quality, explicitQuality)
 	}
 
@@ -551,20 +602,7 @@ func classifyConfidence(f core.Finding) string {
 }
 
 func normalizeMode(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return "strict"
-	}
-	if mode == "bounty" {
-		return "strict"
-	}
-	if mode == "lab" {
-		return "aggressive"
-	}
-	if mode != "strict" && mode != "balanced" && mode != "aggressive" {
-		return "strict"
-	}
-	return mode
+	return normalizeEvidenceMode(mode)
 }
 
 // EvaluateFinding normalizes confidence and applies mode filtering.
@@ -585,12 +623,12 @@ func EvaluateFindingWithOptions(mode string, strictValidation bool, f core.Findi
 
 func normalizeSeverity(f core.Finding) string {
 	sev := normalizeSeverityLabel(f.Severity)
-	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
+	conf := f.Confidence.Normalized()
 	t := strings.ToLower(strings.TrimSpace(f.Type))
 	quality, explicitQuality := deriveEvidenceQuality(f)
 
 	// Confidence-aware downgrade to reduce inflated "critical" labels.
-	if conf == "noisy" {
+	if conf == core.ConfidenceNoisy {
 		switch sev {
 		case "Critical":
 			sev = "Medium"
@@ -598,10 +636,10 @@ func normalizeSeverity(f core.Finding) string {
 			sev = "Low"
 		}
 	}
-	if conf == "probable" && sev == "Critical" {
+	if conf == core.ConfidenceProbable && sev == "Critical" {
 		sev = "High"
 	}
-	if conf != "confirmed" {
+	if conf != core.ConfidenceConfirmed {
 		if t == "vulnerability" || strings.Contains(t, "custom vulnerability") {
 			if sev == "Critical" {
 				sev = "High"
@@ -612,7 +650,7 @@ func normalizeSeverity(f core.Finding) string {
 	}
 
 	// Type-specific caps when impact chain is not explicitly confirmed.
-	if conf != "confirmed" {
+	if conf != core.ConfidenceConfirmed {
 		if strings.Contains(t, "saml vulnerability") && sev == "Critical" {
 			sev = "High"
 		}
@@ -628,35 +666,32 @@ func normalizeSeverity(f core.Finding) string {
 	return normalizeSeverityLabel(sev)
 }
 
-func syncConfidenceWithEvidence(confidence string, quality evidenceQuality, explicitQuality bool) string {
-	conf := strings.ToLower(strings.TrimSpace(confidence))
-	if conf == "" {
-		conf = "probable"
-	}
+func syncConfidenceWithEvidence(confidence core.FindingConfidence, quality evidenceQuality, explicitQuality bool) core.FindingConfidence {
+	conf := confidence.Normalized()
 
 	// Noise suppression rule: weak heuristic-only evidence cannot be medium/high confidence.
 	if explicitQuality && quality.Score < 40 && !quality.Deterministic && !quality.ControlValidated {
-		return "noisy"
+		return core.ConfidenceNoisy
 	}
 
-	if explicitQuality && quality.Tier == "tier1" && quality.Score >= 80 && conf != "confirmed" {
-		return "confirmed"
+	if explicitQuality && quality.Tier == "tier1" && quality.Score >= 80 && conf != core.ConfidenceConfirmed {
+		return core.ConfidenceConfirmed
 	}
 
-	if explicitQuality && quality.FPRisk == "very-high" && conf == "confirmed" && quality.Score < 80 {
-		return "probable"
+	if explicitQuality && quality.FPRisk == "very-high" && conf == core.ConfidenceConfirmed && quality.Score < 80 {
+		return core.ConfidenceProbable
 	}
 
-	if explicitQuality && quality.Score < 70 && conf == "confirmed" {
-		return "probable"
+	if explicitQuality && quality.Score < 70 && conf == core.ConfidenceConfirmed {
+		return core.ConfidenceProbable
 	}
 
 	return conf
 }
 
-func applyEvidenceSeverityCaps(f core.Finding, sev, confidence string, quality evidenceQuality, explicitQuality bool) string {
+func applyEvidenceSeverityCaps(f core.Finding, sev string, confidence core.FindingConfidence, quality evidenceQuality, explicitQuality bool) string {
 	normalized := normalizeSeverityLabel(sev)
-	conf := strings.ToLower(strings.TrimSpace(confidence))
+	conf := confidence.Normalized()
 	deterministicExploitProof := hasDeterministicExploitProof(f, quality)
 	fType := strings.ToLower(strings.TrimSpace(f.Type))
 	detail := strings.ToLower(strings.TrimSpace(f.Detail))
@@ -686,7 +721,7 @@ func applyEvidenceSeverityCaps(f core.Finding, sev, confidence string, quality e
 
 	// Severity-confidence synchronization guardrails.
 	if normalized == "Critical" {
-		if conf != "confirmed" || quality.Score < 85 || quality.Tier != "tier1" || !quality.Deterministic || !quality.ControlValidated {
+		if conf != core.ConfidenceConfirmed || quality.Score < 85 || quality.Tier != "tier1" || !quality.Deterministic || !quality.ControlValidated {
 			normalized = "High"
 		}
 	}
@@ -736,12 +771,12 @@ func applyEvidenceSeverityCaps(f core.Finding, sev, confidence string, quality e
 		if normalized == "High" {
 			normalized = "Medium"
 		}
-		if normalized == "Medium" && conf == "noisy" {
+		if normalized == "Medium" && conf == core.ConfidenceNoisy {
 			normalized = "Low"
 		}
 	}
 
-	if conf == "noisy" && (normalized == "Critical" || normalized == "High") {
+	if conf == core.ConfidenceNoisy && (normalized == "Critical" || normalized == "High") {
 		normalized = "Low"
 	}
 	if deterministicExploitProof && severityRank(normalized) < severityRank("High") {
@@ -951,15 +986,15 @@ func shouldReportFinding(mode string, strictValidation bool, f core.Finding) boo
 	if strictValidation && !passesStrictValidation(f) {
 		return false
 	}
-	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
+	conf := f.Confidence.Normalized()
 	switch mode {
 	case "aggressive":
 		return true
 	case "balanced":
-		return conf != "noisy"
+		return conf != core.ConfidenceNoisy
 	default: // strict
 		// In strict mode, only keep high-impact findings that are explicitly confirmed.
-		if conf != "confirmed" {
+		if conf != core.ConfidenceConfirmed {
 			return false
 		}
 		sev := strings.ToLower(f.Severity)
@@ -990,8 +1025,8 @@ func isLikelyStaticAssetURL(rawURL string) bool {
 }
 
 func passesStrictValidation(f core.Finding) bool {
-	conf := strings.ToLower(strings.TrimSpace(f.Confidence))
-	if conf != "confirmed" {
+	conf := f.Confidence.Normalized()
+	if conf != core.ConfidenceConfirmed {
 		return false
 	}
 

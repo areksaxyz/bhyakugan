@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yupiyy/bhyakugan/internal/core"
-	"github.com/yupiyy/bhyakugan/internal/utils"
+	"github.com/areksaxyz/bhyakugan/internal/core"
+	"github.com/areksaxyz/bhyakugan/internal/utils"
 )
 
 // TraversalPayload defines a specific LFI payload and what to look for
@@ -184,7 +184,7 @@ func ScanLFI(baseURL string, client *http.Client, onFound func(core.Finding)) {
 			Target:     baseURL,
 			Detail:     fmt.Sprintf("LFI vulnerability detected. Impacted resources:\n- %s", strings.Join(results, "\n- ")),
 			Severity:   highestSeverity,
-			Confidence: "confirmed",
+			Confidence: core.ConfidenceConfirmed,
 		})
 	}
 }

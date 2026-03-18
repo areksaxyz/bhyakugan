@@ -17,189 +17,227 @@
    ░         ░ ░
 ```
 
-**Bhyakugan** adalah scanner berbasis Go untuk **public exposure**, **sensitive artifact discovery**, dan **recon intelligence** pada target web tanpa asumsi akun/login. README ini mendeskripsikan tool, dependency, mode operasi, output, dan corpus wordlist yang benar-benar ada di repo, bukan narasi rilis.
+## Bhyakugan
 
-## 🔧 Tooling yang Dipakai
+**Bhyakugan** is a Go-based scanner for **public exposure**, **sensitive artifact discovery**, and **recon intelligence** on web targets without assuming authenticated access.
 
-### Binary utama
-*   `./cmd/bhyakugan`: entrypoint scanner CLI.
-*   `./cmd/mockserver`: target lokal yang sengaja rentan untuk regression dan demo.
+The project is intentionally **exposure-first**, not exploit-first. Its strongest use case is mapping unauthenticated attack surface, validating public exposures, collecting high-signal recon, and separating those results from noisier active checks.
 
-### Dependency eksternal
-*   `subfinder`: subdomain discovery pada mode wildcard.
-*   `assetfinder`: subdomain discovery tambahan pada mode wildcard.
-*   `httpx`: filtering host aktif pada hasil recon.
-*   `curl`: query `crt.sh` pada mode wildcard.
-*   `PayloadsAllTheThings` opsional: dipakai jika Anda menyediakan path lewat `-patt` atau `BHYAKUGAN_PATT`.
+Features • Installation • Quick Start • Runtime Modes • Wordlists • Reporting • Regression • Project Structure
 
-Jika tool di atas tidak ada, engine recon akan memberi warning eksplisit dan menjalankan bagian yang masih tersedia.
+## Legal Disclaimer
 
-## 🧩 Komponen Utama
+Bhyakugan is designed for **authorized security testing** and **educational use** only.
 
-### Core
-*   Pipeline finding dengan enrichment, normalization, dedupe, dan HTML report yang memisahkan validated exposure, probable sensitive signal, dan recon surface.
-*   Runtime mode exposure-first: `public` (default), `extended`, `research`.
-*   Alias kompatibilitas lama tetap diterima: `strict` -> `public`, `balanced` -> `extended`, `aggressive` -> `research`, `bounty` -> `public`, `lab` -> `research`.
-*   Crawl dan follow-up scan dengan endpoint cap otomatis per host.
+- Legal use: assets you own, labs, bug bounty targets within program rules, and systems you have explicit written permission to test.
+- Illegal use: unauthorized access, disruptive testing, or any activity outside approved scope.
 
-### Plugin inti untuk identitas tool ini
-*   Public exposure dan artifact discovery: secrets, directories, Git exposure, GraphQL, JS analyzer, HTML recon.
-*   Surface dan misconfiguration signal: public storage exposure, proxy behavior, SSRF metadata/url-fetch surface, open redirect.
-*   Exposure-adjacent checks yang masih ada di repo: file upload, LFI, SSI, JWT, SAML, NoSQLi, SQLi, XPath, XSLT, RCE, IDOR, type juggling, prototype pollution.
+You are responsible for ensuring you have permission before scanning any target.
 
-Prinsip utama repo ini sekarang adalah: temuan tanpa auth yang bisa dibuktikan langsung harus lebih diutamakan daripada claim eksploitasi aktif yang lemah.
+## Features
 
-### Artifact dan script
-*   `Makefile`: `build`, `test`, `fmt`, `vet`.
-*   `scripts/regression_local.sh`: build + package-level regression lokal.
-*   `scripts/localhost_fullstack_regression.sh`: fullstack localhost regression terhadap mockserver.
-*   `.github/workflows/ci.yml`: build, test, dan vet untuk push / pull request.
+### Exposure-first runtime model
 
-## 🛠️ Instalasi
+- `public` mode is the default and prioritizes public exposure checks and recon intelligence.
+- `extended` adds broader surface and misconfiguration signals.
+- `research` enables noisier and more exploit-oriented families for lab or deeper investigation.
+- Legacy aliases still work: `strict`, `balanced`, `aggressive`, `bounty`, `lab`.
 
-### Prasyarat
-*   Go 1.21
-*   Tool eksternal opsional untuk wildcard recon: `subfinder`, `assetfinder`, `httpx`, `curl`
-*   Module path repo ini: `github.com/areksaxyz/bhyakugan`
+### Public exposure and recon coverage
 
-### Build dari Source
+- Sensitive artifact discovery: config leaks, backup files, archives, debug artifacts, interesting public files.
+- JS and frontend intelligence: endpoint references, internal route hints, sourcemap-adjacent findings, secret keyword matches.
+- GraphQL discovery: endpoint probing, safe request markers, introspection/config exposure detection.
+- Public storage and infrastructure signals: bucket/container exposure checks, metadata and URL-fetch surface discovery.
+- Attack surface mapping: admin paths, login forms, robots/sitemaps, framework and endpoint references.
+
+### Safer report model
+
+- Findings are separated into:
+  - `Validated Public Exposures`
+  - `Probable Sensitive Signals`
+  - `Recon / Attack Surface`
+- Severity is reserved for validated exposures so recon does not pollute the main risk summary.
+- Confidence and bucket classification use canonical internal status types rather than loose string labels.
+
+### Built-in regression guardrails
+
+- Report-level regression prevents contradictions like `CONFIRMED` plus signal-only wording.
+- Golden-file HTML regression keeps report layout and dashboard buckets stable.
+- Runtime-mode regression verifies `public` does not silently enable research-only plugin families.
+- Localhost fullstack regression validates detector behavior against the bundled mock target.
+
+## Prerequisites
+
+### Required
+
+- Go `1.21+`
+- Git
+
+### Optional external tools
+
+Bhyakugan can use the following when available for wildcard recon:
+
+| Tool | Purpose |
+| --- | --- |
+| `subfinder` | Passive subdomain enumeration |
+| `assetfinder` | Additional subdomain discovery |
+| `httpx` | Live host filtering and HTTP probing |
+| `curl` | `crt.sh` enumeration |
+| `PayloadsAllTheThings` | Optional external payload corpus via `-patt` or `BHYAKUGAN_PATT` |
+
+If a tool is missing, Bhyakugan will keep running with reduced coverage where possible.
+
+## Installation
+
+### Clone and build
+
 ```bash
 git clone https://github.com/areksaxyz/bhyakugan.git
 cd bhyakugan
 make build
 ```
 
-Alternatif manual:
+### Manual build
+
 ```bash
 go build -ldflags="-X main.version=4.0.0" -o bhyakugan ./cmd/bhyakugan
 ```
 
-Atau install langsung dari module path:
+### Install with `go install`
+
 ```bash
 go install github.com/areksaxyz/bhyakugan/cmd/bhyakugan@latest
 ```
 
-Gunakan package `./cmd/bhyakugan` sebagai target build resmi. Root module bukan target `go build .`.
+Build target: `./cmd/bhyakugan`  
+Module path: `github.com/areksaxyz/bhyakugan`
 
-## 📖 Penggunaan
+## Quick Start
 
-### Scan Target Tunggal
+### Single target
+
 ```bash
 ./bhyakugan -target https://api.example.com -mode public
 ```
 
-### Scan Wildcard
+### Wildcard / domain scan
+
 ```bash
 ./bhyakugan -domain example.com -depth 1
 ```
 
-### Dengan PayloadsAllTheThings
+### Research mode with external payload corpus
+
 ```bash
 ./bhyakugan -target https://api.example.com -mode research -patt /path/to/PayloadsAllTheThings
 ```
 
-### Flag penting
-*   `-target`: target URL tunggal.
-*   `-domain`: domain untuk recon wildcard.
-*   `-mode`: `public`, `extended`, `research` dengan alias legacy `strict`, `balanced`, `aggressive`, `bounty`, `lab`.
-*   `-depth`: kedalaman crawling.
-*   `-threads`: concurrency worker.
-*   `-fast`: triage cepat, mengurangi modul berat.
-*   `-strict-validation`: drop finding heuristik-only.
-*   `-max-endpoints`: limit endpoint per host. `0` berarti auto by mode: `public=75`, `extended=100`, `research=150`, `fast=25`.
-*   `-patt`: root repo `PayloadsAllTheThings`.
+### Common flags
 
-## 🧭 Workflow Tool
+| Flag | Description |
+| --- | --- |
+| `-target` | Scan a single URL |
+| `-domain` | Run wildcard recon and scan live hosts |
+| `-mode` | `public`, `extended`, `research` plus legacy aliases |
+| `-depth` | Crawl depth |
+| `-threads` | Worker concurrency |
+| `-fast` | Fast triage profile |
+| `-strict-validation` | Drop heuristic-only findings |
+| `-max-endpoints` | Per-host endpoint cap, `0` = mode-aware auto cap |
+| `-patt` | Path to PayloadsAllTheThings |
 
-```mermaid
-flowchart TD
-    A[Input: -target atau -domain] --> B{Mode Input}
-    B -->|target| C[Profile target]
-    B -->|domain| D[Recon wildcard]
-    D --> D1[subfinder]
-    D --> D2[assetfinder]
-    D --> D3[crt.sh via curl]
-    D1 --> E[Deduplicate subdomains]
-    D2 --> E
-    D3 --> E
-    E --> F[Filter live hosts via httpx]
-    F --> G[Scan each live host]
-    C --> G
+## Runtime Modes
 
-    G --> H[Root endpoint scan]
-    G --> I[Directory discovery]
-    G --> J[Crawler + extracted links]
-    G --> K[JS analyzer + sourcemap + endpoint probing]
-    G --> L[Parallel plugin checks]
+### `public`
 
-    L --> L1[SQLi / NoSQLi / SSRF / SSTI]
-    L --> L2[XPath / XSLT / RCE / IDOR]
-    L --> L3[JWT / SAML / secrets]
-    L --> L4[Git / GraphQL / WebSocket / Proxy]
-    L --> L5[Open Redirect / File Upload / LFI / SSI]
+Default mode, optimized for unauthenticated public exposure assessment.
 
-    H --> M[Finding enrichment]
-    I --> M
-    J --> M
-    K --> M
-    L --> M
+Primary focus:
 
-    M --> N[Dedupe + severity normalization]
-    N --> O[HTML report generation]
-    O --> P[bhyakugan-output/report_*.html]
-```
+- `directories`
+- `git`
+- `graphql`
+- `jsanalyzer`
+- `recon_html`
+- `secrets`
+- `public_storage`
 
-### Single target
-1.  Profiling target.
-2.  Endpoint scan root.
-3.  Directory discovery dan crawler.
-4.  JS analysis dan plugin scan paralel.
-5.  Enrichment, dedupe, scoring, lalu HTML report.
+### `extended`
 
-### Wildcard target
-1.  `subfinder`, `assetfinder`, dan `crt.sh` dijalankan paralel bila tersedia.
-2.  Hasil disaring dengan `httpx`.
-3.  Setiap live host dipindai dengan scanner yang sama seperti mode single target.
+Builds on `public` and adds broader surface and misconfiguration checks.
 
-## 🗂️ Wordlists dan Corpus
+Typical additions:
 
-Repo ini sekarang menyimpan corpus lokal di `wordlists/` dengan dua bentuk:
+- `openredirect`
+- `proxy`
+- `websocket`
+- `ormleak`
 
-*   Flat files untuk kompatibilitas lama.
-*   Tiered layout:
-    `wordlists/discovery`
-    `wordlists/verify`
-    `wordlists/aggressive`
+### `research`
 
-Contoh yang sudah ada:
-*   Discovery: `paths-common.txt`, `paths-admin.txt`, `paths-backups.txt`, `paths-api.txt`, `graphql-endpoints.txt`, `openredirect-params.txt`, `idor-params.txt`, `ssrf-params.txt`, `upload-params.txt`, `auth-params.txt`, `debug-params.txt`, `cloud-metadata-paths.txt`
-*   Verify: `graphql-safe-probes.txt`, `upload-safe-filenames.txt`, `upload-safe-content-types.txt`, `response-interesting-keywords.txt`, `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, `cors-interesting-headers.txt`, `file-interesting-names.txt`
-*   Research profile corpus: upload bypass filenames/extensions dan SQLi DB-specific lists
+Enables noisier and more exploit-oriented plugin families intended for labs, regression, or deeper manual investigation.
 
-Catatan: tidak semua file wordlist sudah di-wire otomatis ke semua plugin. Sebagian masih berfungsi sebagai corpus repo yang siap dipakai pada wiring berikutnya.
-Saat direktori `wordlists/` lokal tersedia, engine otomatis memuat corpus untuk:
-*   discovery paths di plugin directories
-*   `verify/file-interesting-names.txt` untuk directories dan public storage exposure
-*   endpoint list GraphQL
-*   GraphQL request/content-type markers dari `graphql-params.txt` dan `graphql-safe-probes.txt`
-*   `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, dan `response-interesting-keywords.txt` di JS analyzer
-*   parameter list open redirect dan SSRF
-*   verify-safe upload probes, plus bypass filenames tambahan hanya pada profile `research` atau alias legacy `aggressive` / `lab`
+Typical additions:
 
-Sebagian corpus lain masih disimpan sebagai stok repo untuk ekspansi plugin berikutnya.
+- `jwt`
+- `sqli`
+- `ssrf`
+- `idor`
+- `xpath`
+- `ssti`
+- `rce`
+- `typejuggling`
+- bundled `vulns`
 
-## 📄 Output
+### Auto endpoint caps
 
-*   Report HTML ditulis ke `bhyakugan-output/`.
-*   Direktori output dibuat dengan permission privat (`0700`), file report/list dengan `0600`.
-*   HTML report sudah meng-escape field dinamis dan membatasi hyperlink ke `http/https`.
-*   Report dibagi ke tiga bucket utama:
-    `Validated Public Exposures`
-    `Probable Sensitive Signals`
-    `Recon / Attack Surface`
-*   Dashboard atas memisahkan overview exposure/signal/recon dari severity validated exposure, supaya recon tidak bercampur dengan severity utama.
+When `-max-endpoints=0`, the cap is resolved automatically:
 
-### Contoh dashboard report
+| Profile | Default cap |
+| --- | --- |
+| `fast` | `25` |
+| `public` | `75` |
+| `extended` | `100` |
+| `research` | `150` |
+
+## What Bhyakugan Is Best At
+
+### Validated public exposures
+
+- Public config leaks
+- Backup or archive exposure
+- Public admin tooling or dashboards
+- Public source map exposure
+- Public debug, health, or info endpoints
+- Public storage exposure
+
+### Probable sensitive signals
+
+- JS references to internal APIs or sensitive routes
+- Interesting endpoint names and secret-like keywords
+- Safe differential signals that deserve manual follow-up
+- Metadata and URL-fetch surfaces
+
+### Recon and attack surface
+
+- Login forms
+- `robots.txt` and `sitemap.xml`
+- Admin path discovery
+- GraphQL endpoint existence
+- Public API route references
+- Framework and middleware hints
+
+## Reporting
+
+HTML reports are written to `bhyakugan-output/` using private file permissions:
+
+- output directory: `0700`
+- report files: `0600`
+
+The report renderer escapes dynamic fields and restricts hyperlinks to `http` and `https`.
+
+### Report dashboard model
 
 ```text
 Target: https://example.com
@@ -224,12 +262,78 @@ Sections
 - Recon / Attack Surface
 ```
 
-Interpretasi section:
-*   `Validated Public Exposures`: temuan yang bisa dibuktikan tanpa auth, misalnya config leak, backup exposure, public tooling, atau debug endpoint yang benar-benar bisa diakses.
-*   `Probable Sensitive Signals`: sinyal yang cukup kuat untuk investigasi manual, tetapi belum layak dipresentasikan sebagai validated exposure.
-*   `Recon / Attack Surface`: pemetaan permukaan seperti login form, robots, sourcemap, admin path, discovered API route, dan fingerprint lain yang berguna untuk assessment lanjutan.
+### Section meanings
 
-## 🧪 Regression
+- `Validated Public Exposures`: findings with evidence strong enough to stand as unauthenticated exposure.
+- `Probable Sensitive Signals`: meaningful signals that still need manual verification or more context.
+- `Recon / Attack Surface`: useful surface mapping and intelligence, not headline vulnerabilities.
+
+## Wordlists and Corpus
+
+Bhyakugan ships with a local corpus under [`wordlists/`](wordlists/README.md).
+
+Current layout:
+
+- `wordlists/discovery`
+- `wordlists/verify`
+- `wordlists/aggressive`
+- flat compatibility files kept at the root of `wordlists/`
+
+### Exposure-first corpus already wired
+
+- discovery paths for `directories`
+- `verify/file-interesting-names.txt` for `directories` and public storage
+- `graphql-endpoints.txt`, `graphql-params.txt`, `graphql-safe-probes.txt`
+- `js-secret-keywords.txt`, `js-endpoint-keywords.txt`, `response-interesting-keywords.txt`
+- open redirect and SSRF parameter lists
+- safe upload verification probes
+
+### Corpus examples
+
+| Category | Example files |
+| --- | --- |
+| Discovery paths | `paths-common.txt`, `paths-admin.txt`, `paths-backups.txt`, `paths-api.txt` |
+| GraphQL | `graphql-endpoints.txt`, `graphql-params.txt`, `verify/graphql-safe-probes.txt` |
+| JS / response intel | `verify/js-secret-keywords.txt`, `verify/js-endpoint-keywords.txt`, `verify/response-interesting-keywords.txt` |
+| Surface params | `openredirect-params.txt`, `ssrf-params.txt`, `auth-params.txt`, `debug-params.txt` |
+| Research-only extras | upload bypass lists and DB-specific SQLi lists under `wordlists/aggressive/` |
+
+Not every wordlist is wired into every plugin yet. Some remain staged corpus for future expansion.
+
+## Workflow Overview
+
+```mermaid
+flowchart TD
+    A[Input: -target or -domain] --> B{Scan Mode}
+    B -->|target| C[Profile target]
+    B -->|domain| D[Wildcard recon]
+    D --> D1[subfinder]
+    D --> D2[assetfinder]
+    D --> D3[crt.sh via curl]
+    D1 --> E[Deduplicate candidates]
+    D2 --> E
+    D3 --> E
+    E --> F[Filter live hosts with httpx]
+    F --> G[Scan each host]
+    C --> G
+    G --> H[Root profiling]
+    G --> I[Directory discovery]
+    G --> J[Crawler and extracted links]
+    G --> K[JS analyzer and endpoint probing]
+    G --> L[Plugin checks]
+    H --> M[Finding enrichment]
+    I --> M
+    J --> M
+    K --> M
+    L --> M
+    M --> N[Dedupe and normalization]
+    N --> O[HTML report]
+    O --> P[bhyakugan-output/report_*.html]
+```
+
+## Regression and Verification
+
+### Local test commands
 
 ```bash
 make test
@@ -237,23 +341,62 @@ make test
 ./scripts/localhost_fullstack_regression.sh
 ```
 
-`cmd/mockserver` dipakai sebagai target lokal untuk regression dan demo flow.
+### Guardrails currently enforced
 
-Guardrail yang sekarang dikunci:
-*   report bucket dan summary tidak boleh saling bertentangan
-*   probable signal tidak boleh tampil sebagai confirmed
-*   trap localhost seperti reflection/static variation tidak boleh lolos sebagai XPath finding
-*   clustering root-cause XSLT/XPath pada localhost harus tetap satu row representatif
-*   header report harus menampilkan mode runtime yang benar
+- report bucket and summary counters must stay consistent
+- probable signals must not render as confirmed
+- reflection and static-variation traps must not be reported as XPath
+- localhost root-cause clustering for XSLT and XPath must stay one representative row
+- report header must display normalized runtime mode
 
-## ⚠️ Catatan Praktis
+The bundled [`cmd/mockserver`](cmd/mockserver/main.go) exists specifically for localhost regression and demo scenarios.
 
-*   Mode wildcard bergantung pada tool eksternal. Coverage recon akan turun jika dependency tidak ada.
-*   Beberapa plugin aktif yang lebih eksploitasi-heavy masih ada di repo, tetapi hasil tanpa bukti kuat sengaja diposisikan sebagai signal atau recon, bukan validated exposure.
-*   `-fast` dan endpoint cap otomatis lebih aman untuk target besar dibanding scan agresif penuh.
+## Project Structure
 
-## ⚠️ Disclaimer
-Bhyakugan dibuat untuk **Security Professionals**. Penggunaan tool ini untuk menyerang target tanpa izin tertulis adalah **ILEGAL**. Developer tidak bertanggung jawab atas penyalahgunaan tool ini.
+```text
+bhyakugan/
+├── cmd/
+│   ├── bhyakugan/          # CLI entrypoint
+│   └── mockserver/         # Local vulnerable regression target
+├── internal/
+│   ├── core/               # Finding types, status model, verification
+│   ├── crawler/            # Crawl and follow-up discovery
+│   ├── output/             # HTML report generation and golden tests
+│   ├── payloadrepo/        # External payload repo + local wordlist loading
+│   ├── plugins/            # Exposure, recon, and research plugin families
+│   ├── recon/              # Wildcard recon helpers
+│   ├── scanner/            # Runtime modes, orchestration, pipeline
+│   └── utils/              # Shared HTTP and response helpers
+├── scripts/
+│   ├── regression_local.sh
+│   └── localhost_fullstack_regression.sh
+├── wordlists/              # Local discovery, verify, and aggressive corpus
+├── CHANGELOG.md
+├── Makefile
+└── LICENSE
+```
+
+## Latest Release Notes
+
+See [CHANGELOG.md](CHANGELOG.md) for the current `v4.0.0` release summary, including:
+
+- exposure-first positioning
+- runtime mode redesign
+- report bucket redesign
+- wordlist wiring progress
+- localhost regression hardening
+
+## Practical Notes
+
+- Wildcard mode depends on external tools, so coverage will vary by environment.
+- Some active exploit-style plugins still exist in the repo, but weak evidence is intentionally demoted into signal or recon buckets.
+- `public` mode is the safest default for large targets.
+- `research` mode is better suited for labs, local regression, or controlled deeper assessment.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ---
-Created with ❤️ by **areksaxyz (Arga Reksapati)**
+
+Created by **areksaxyz (Arga Reksapati)**
